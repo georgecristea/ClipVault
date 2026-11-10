@@ -12,6 +12,8 @@ item is back on your clipboard.
 It stays on your Mac: no account, no network access, no permissions to grant. Password managers
 are skipped by default.
 
+<p align="center"><img src="docs/screenshot.png" width="420" alt="ClipVault popover: searchable clipboard history with a pinned link, text snippets, an image and a file"></p>
+
 ## Features
 
 - **Text, images and files.** Plain text, images (stored as PNG) and Finder file references.
@@ -103,6 +105,8 @@ toolkit behind this app, [VoxKey](https://github.com/georgecristea/VoxKey) and
 swift build    # compile
 swift test     # classifier and SQLite store tests
 ./scripts/install.sh
+.build/debug/ClipVault --demo                        # sample history; never reads your clipboard
+.build/debug/ClipVault --demo --snapshot out.png     # render the popover to a PNG and quit
 ```
 
 Always run the app from `/Applications`, not from `.build` or `dist/`. Packaging scripts:

@@ -65,6 +65,12 @@ actor SQLiteClipStore: ClipStore {
 
     @discardableResult
     func save(_ capture: ClipboardCapture, sourceBundleID: String?) throws -> Bool {
+        try save(capture, sourceBundleID: sourceBundleID, at: Date())
+    }
+
+    /// `date` is only overridden by demo mode, to give sample clips realistic ages.
+    @discardableResult
+    func save(_ capture: ClipboardCapture, sourceBundleID: String?, at date: Date) throws -> Bool {
         let hash = Self.hash(kind: capture.kind, data: capture.data)
         if try latestHash() == hash {
             return false
@@ -76,7 +82,7 @@ actor SQLiteClipStore: ClipStore {
         try capture.data.write(to: payloadURL, options: .atomic)
         Self.restrictPermissions(at: payloadURL)
 
-        let now = Date().timeIntervalSince1970
+        let now = date.timeIntervalSince1970
         let sql = """
         INSERT INTO clipboard_items
         (id, kind, created_at, updated_at, sha256, preview, payload_path, byte_count, pinned, source_bundle_id)
