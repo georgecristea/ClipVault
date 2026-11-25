@@ -2,6 +2,7 @@ import AppKit
 import Carbon.HIToolbox
 import MacUtilityKit
 import SwiftUI
+import os
 
 /// Shows and hides the bar, handles its keys, and carries out what the user picks.
 @MainActor
@@ -84,7 +85,7 @@ final class BarController {
 
     // MARK: - Showing and hiding
 
-    func toggle() { isVisible ? hide() : show() }
+    func toggle() { isVisible ? hide(restoreFocus: true) : show() }
 
     func show() {
         guard !isVisible else { return }
@@ -118,7 +119,10 @@ final class BarController {
         }
     }
 
-    func hide(animated: Bool = true, completion: (() -> Void)? = nil) {
+    /// Hides the bar. `restoreFocus` hands keyboard focus back to the app the user came from;
+    /// use it when the bar closes from the keyboard (paste, copy, Esc). When the user clicked
+    /// another app, they already chose where focus goes, so leave it.
+    func hide(animated: Bool = true, restoreFocus: Bool = false, completion: (() -> Void)? = nil) {
         guard isVisible else { completion?(); return }
         isVisible = false
         preview.hide()
@@ -128,8 +132,10 @@ final class BarController {
         mouseMonitor = nil
         if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
         activationObserver = nil
+        let focusTarget = targetApp
         guard animated else {
             panel.orderOut(nil)
+            if restoreFocus { handBackFocus(to: focusTarget) }
             completion?()
             return
         }
@@ -141,6 +147,7 @@ final class BarController {
         }, completionHandler: { [weak self] in
             Task { @MainActor in
                 self?.panel.orderOut(nil)
+                if restoreFocus { self?.handBackFocus(to: focusTarget) }
                 completion?()
             }
         })
@@ -159,7 +166,7 @@ final class BarController {
         let shift = flags.contains(.shift)
         switch Int(event.keyCode) {
         case kVK_Escape:
-            if preview.isVisible { preview.hide() } else if model.query.isEmpty { hide() } else { setQuery("") }
+            if preview.isVisible { preview.hide() } else if model.query.isEmpty { hide(restoreFocus: true) } else { setQuery("") }
         case kVK_LeftArrow:
             if command { model.switchTab(by: -1); reload(resetCursor: true) } else { moveCursor(by: -1, extend: shift) }
         case kVK_RightArrow:
@@ -208,7 +215,7 @@ final class BarController {
             let items = model.actionableItems
             run { await $0.appState.togglePinned(items) }
         case ",": hide(); openSettings()
-        case "w": hide()
+        case "w": hide(restoreFocus: true)
         default: return false
         }
         return true
@@ -222,7 +229,7 @@ final class BarController {
         let target = targetApp
         Task { [weak self] in
             guard let self, await self.appState.writeToClipboard(items, plainText: plainText) else { return }
-            self.hide(animated: false) {
+            self.hide(animated: false, restoreFocus: true) {
                 guard self.appState.settings.pasteIntoActiveApp else { return }
                 guard AXIsProcessTrusted() else {
                     if !self.askedForAccessibility {
@@ -231,20 +238,57 @@ final class BarController {
                     }
                     return
                 }
-                self.returnFocus(to: target)
+                self.pasteWhenFocused(in: target)
             }
         }
     }
 
-    /// Hands keyboard focus back to the target app, waits until it really has it, then sends ⌘V.
-    /// Sending too early lands the keystroke in ClipVault itself, which beeps.
-    private func returnFocus(to target: NSRunningApplication?) {
-        if let target {
-            // macOS 14 cooperative activation: hand activation to the target explicitly.
-            NSApp.yieldActivation(to: target)
-            target.activate()
+    enum FocusStep: Equatable {
+        case activateSelf, yieldToTarget, activateTarget, hideSelf
+    }
+
+    /// How to give keyboard focus back. The bar's panel takes keyboard focus without activating
+    /// ClipVault, and closing it does not return focus to the app underneath: its window looks
+    /// focused but typing beeps. A real activation switch fixes that, and under macOS 14's
+    /// cooperative activation only the active app can hand activation over, so ClipVault
+    /// activates itself first (it has no visible window, so nothing flashes) and yields.
+    nonisolated static func focusHandoff(clipVaultIsActive: Bool, hasTarget: Bool) -> [FocusStep] {
+        let first: [FocusStep] = clipVaultIsActive ? [] : [.activateSelf]
+        return first + (hasTarget ? [.yieldToTarget, .activateTarget] : [.hideSelf])
+    }
+
+    private func handBackFocus(to target: NSRunningApplication?) {
+        let usableTarget = target.flatMap { $0.isTerminated ? nil : $0 }
+        for step in Self.focusHandoff(clipVaultIsActive: NSApp.isActive, hasTarget: usableTarget != nil) {
+            switch step {
+            case .activateSelf: NSApp.activate()
+            case .yieldToTarget: if let usableTarget { NSApp.yieldActivation(to: usableTarget) }
+            case .activateTarget: usableTarget?.activate()
+            case .hideSelf: NSApp.hide(nil)
+            }
         }
-        if NSApp.isActive { NSApp.hide(nil) }
+        // Diagnostics: which app holds keyboard focus afterwards (needs Accessibility).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            Self.log.info("Focus handed back to \(usableTarget?.bundleIdentifier ?? "-", privacy: .public); keyboard focus is now in \(Self.keyboardFocusApp() ?? "unknown", privacy: .public)")
+        }
+    }
+
+    private static let log = Logger(subsystem: "com.georgecristea.ClipVault", category: "bar")
+
+    /// The bundle id of the app that receives typing, as Accessibility reports it.
+    static func keyboardFocusApp() -> String? {
+        guard AXIsProcessTrusted() else { return nil }
+        var app: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(), kAXFocusedApplicationAttribute as CFString, &app) == .success,
+              let app, CFGetTypeID(app) == AXUIElementGetTypeID() else { return nil }
+        var pid: pid_t = 0
+        AXUIElementGetPid(app as! AXUIElement, &pid) // swiftlint:disable:this force_cast
+        return NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
+    }
+
+    /// Waits until the target app really has focus, then sends ⌘V. Sending too early lands the
+    /// keystroke in ClipVault itself, which beeps.
+    private func pasteWhenFocused(in target: NSRunningApplication?) {
         let deadline = Date().addingTimeInterval(1.0)
         func attempt() {
             let ready = Self.readyToPaste(frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
@@ -272,7 +316,7 @@ final class BarController {
     private func copy(_ items: [ClipboardItem]) {
         guard !items.isEmpty else { return }
         Task {
-            if await appState.writeToClipboard(items, plainText: false) { hide() }
+            if await appState.writeToClipboard(items, plainText: false) { hide(restoreFocus: true) }
         }
     }
 
