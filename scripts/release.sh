@@ -6,8 +6,8 @@ set -euo pipefail
 # USAGE:
 #   ./scripts/release.sh v0.1.0
 #
-# Requires the `gh` CLI, authenticated (`gh auth status`). The build is ad-hoc signed and not
-# notarized, so the release notes explain how to get past Gatekeeper.
+# Requires the `gh` CLI, authenticated (`gh auth status`). The build is signed with the local
+# certificate (or ad-hoc) and not notarized, so the release notes explain how to get past Gatekeeper.
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="ClipVault"
@@ -30,6 +30,10 @@ DMG="$ROOT_DIR/dist/$APP_NAME.dmg"
 VERSION="${TAG#v}"
 NOTES="$(cat <<EOF
 **Install:** download **$APP_NAME.dmg**, open it, and drag $APP_NAME into Applications.
+
+Press **⇧⌘V** to open the bar. To paste straight into the app you're using, ClipVault needs
+**Accessibility**: open Settings (gear in the bar) → **Grant…** and switch ClipVault on. Without
+it, picking a clip copies it and you press ⌘V yourself.
 
 This build is not notarized by Apple yet, so macOS blocks the first launch. Open it once with
 **System Settings → Privacy & Security → Open Anyway**, or run:

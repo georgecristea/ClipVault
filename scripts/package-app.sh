@@ -55,9 +55,9 @@ if [[ -f "$ICON_SRC" ]]; then
 fi
 
 # Base signature. Honors CODE_SIGN_IDENTITY (set by notarize.sh for a Developer ID build).
-# Otherwise prefers the local self-signed "Local Code Signing" certificate (VoxKey's
-# scripts/setup-signing.sh creates it): it never changes, so the Accessibility grant ClipVault
-# needs to paste survives rebuilds. Then an Apple Development cert, then ad-hoc.
+# Otherwise prefers the local self-signed "Local Code Signing" certificate (run
+# ./scripts/setup-signing.sh once to create it): it never changes, so the Accessibility grant
+# ClipVault needs to paste survives rebuilds. Then an Apple Development cert, then ad-hoc.
 if command -v codesign >/dev/null 2>&1; then
     SIGN_IDENTITY="${CODE_SIGN_IDENTITY:-}"
     LOCAL_SIGN_NAME="${LOCAL_SIGN_NAME:-Local Code Signing}"
@@ -74,7 +74,7 @@ if command -v codesign >/dev/null 2>&1; then
     SIGN_IDENTITY="${SIGN_IDENTITY:--}"
     if [[ "$SIGN_IDENTITY" == "-" ]]; then
         echo "WARNING: no signing certificate found, signing ad-hoc. macOS will drop the" >&2
-        echo "Accessibility grant on every rebuild." >&2
+        echo "Accessibility grant on every rebuild. Run ./scripts/setup-signing.sh once." >&2
     fi
     echo "Signing with: $SIGN_IDENTITY"
     codesign --force --deep --sign "$SIGN_IDENTITY" "$APP_DIR" >/dev/null
