@@ -126,6 +126,11 @@ final class AppState: ObservableObject {
         onHistoryChanged?()
     }
 
+    /// Pauses capture until resumed, or resumes it.
+    func setCapturePaused(_ paused: Bool) {
+        pause(until: paused ? .distantFuture : nil)
+    }
+
     func quit() {
         NSApp.terminate(nil)
     }

@@ -45,6 +45,7 @@ final class BarController {
                 }
             },
             selectTab: { [weak self] in self?.select(tab: $0) },
+            resumeCapture: { [weak self] in self?.appState.setCapturePaused(false) },
             openSettings: { [weak self] in self?.hide(); self?.openSettings() })
         panel.contentView = NSHostingView(rootView: BarView(model: model, settings: appState.settings, images: images, actions: actions))
         panel.keyHandler = { [weak self] in self?.handleKey($0) ?? false }
