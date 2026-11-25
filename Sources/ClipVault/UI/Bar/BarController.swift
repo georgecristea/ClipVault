@@ -226,7 +226,7 @@ final class BarController {
                 guard MUKPasteInjector.isTrusted else {
                     if !self.askedForAccessibility {
                         self.askedForAccessibility = true
-                        Self.requestAccessibility()
+                        AccessibilityAccess.request()
                     }
                     return
                 }
@@ -236,12 +236,6 @@ final class BarController {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { injector.paste() }
             }
         }
-    }
-
-    /// Shows the system prompt that leads to the Accessibility settings.
-    static func requestAccessibility() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        AXIsProcessTrustedWithOptions(options)
     }
 
     private func copy(_ items: [ClipboardItem]) {

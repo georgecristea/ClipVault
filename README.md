@@ -43,6 +43,10 @@ Settings → Privacy & Security → Accessibility); Settings has a **Grant…** 
 with "Paste into the active app" turned off, picking a clip copies it and you paste with ⌘V
 yourself.
 
+If the switch is on but pasting still doesn't work (this happens after updating to a build with a
+different signature), click **Grant…** in Settings again: ClipVault clears its old entry and asks
+afresh, and you switch it on once more.
+
 ### Keyboard
 
 | Key | Action |
