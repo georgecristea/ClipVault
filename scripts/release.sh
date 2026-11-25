@@ -31,7 +31,7 @@ VERSION="${TAG#v}"
 NOTES="$(cat <<EOF
 **Install:** download **$APP_NAME.dmg**, open it, and drag $APP_NAME into Applications.
 
-Press **⇧⌘V** to open the bar. To paste straight into the app you're using, ClipVault needs
+Press **⇧⌘V** to open the bar. To paste straight into the app you are using, ClipVault needs
 **Accessibility**: open Settings (gear in the bar) → **Grant…** and switch ClipVault on. Without
 it, picking a clip copies it and you press ⌘V yourself.
 
