@@ -34,7 +34,7 @@ swift test                  # unit tests
 ```
 
 Always run the app from `/Applications`. Packaging signs with the "Local Code Signing" certificate
-when present (VoxKey's `scripts/setup-signing.sh` creates it), so the Accessibility grant survives
+when present (`./scripts/setup-signing.sh` creates it once per Mac), so the Accessibility grant survives
 rebuilds. To see the bar without a key press: post the distributed notification
 `com.georgecristea.ClipVault.toggleBar`. `--demo --snapshot out.png` renders the bar for the README.
 

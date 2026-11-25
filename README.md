@@ -120,9 +120,8 @@ Sources/ClipVault/
   UI/         StatusBarController (menu), SettingsWindow, SettingsView, ExclusionsView, ClipPreview, AboutView
 ```
 
-The UI is built on [MacUtilityKit](https://github.com/georgecristea/MacUtilityKit), the shared
-toolkit behind this app, [VoxKey](https://github.com/georgecristea/VoxKey) and
-[Upkeep](https://github.com/georgecristea/upkeep).
+The UI is built on [MacUtilityKit](https://github.com/georgecristea/MacUtilityKit), the toolkit
+shared with the projects listed under [Related projects](#related-projects).
 
 ## Development
 
@@ -139,6 +138,16 @@ Always run the app from `/Applications`, not from `.build` or `dist/`. Packaging
 (GitHub release), and `scripts/notarize.sh` (Developer ID signing and notarization, needs an
 Apple Developer account). [CLAUDE.md](CLAUDE.md) has the architecture notes and macOS gotchas, for
 humans and coding agents alike. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Related projects
+
+Open-source Mac utilities by the same author, built on one shared toolkit:
+
+| Project | What it is |
+|---------|------------|
+| [VoxKey](https://github.com/georgecristea/VoxKey) | Push-to-talk dictation, transcribed on your Mac |
+| [Upkeep](https://github.com/georgecristea/upkeep) | Keeps a curated list of Mac apps and command-line tools up to date |
+| [MacUtilityKit](https://github.com/georgecristea/MacUtilityKit) | The SwiftUI + AppKit toolkit the three apps share |
 
 ## License
 

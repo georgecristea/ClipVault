@@ -9,6 +9,11 @@ contributions are focused ones.
 - **Pull requests:** keep them small and on one topic. Run `swift build` and `swift test` before pushing, and
   check the change in the installed app (`./scripts/install.sh`), since most bugs in menu bar apps
   only show up there.
+- **First time building:** run `./scripts/setup-signing.sh` once. It creates a local signing
+  certificate so the Accessibility permission ClipVault needs to paste survives rebuilds.
+- **Looking for something to work on?** Issues labelled
+  [good first issue](https://github.com/georgecristea/ClipVault/labels/good%20first%20issue) are small
+  and self-contained.
 
 ## Working on the UI toolkit
 
@@ -20,6 +25,13 @@ swift package edit MacUtilityKit --path ../MacUtilityKit
 ```
 
 `swift package unedit MacUtilityKit` switches back to the released version.
+
+## Related projects
+
+The same author maintains [ClipVault](https://github.com/georgecristea/ClipVault),
+[VoxKey](https://github.com/georgecristea/VoxKey), [Upkeep](https://github.com/georgecristea/upkeep)
+and the toolkit they share, [MacUtilityKit](https://github.com/georgecristea/MacUtilityKit).
+Contributions to any of them are welcome.
 
 ## Licensing
 
