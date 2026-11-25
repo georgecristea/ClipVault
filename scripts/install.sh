@@ -36,5 +36,7 @@ if [[ -f "$AGENT" ]]; then
     launchctl bootstrap "gui/$(id -u)" "$AGENT" 2>/dev/null || true
 fi
 
+"$ROOT_DIR/scripts/check-accessibility-grant.sh" "$TARGET" || true
+
 open "$TARGET"
 echo "✅ Installed and launched $TARGET ($(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$PLIST"))"

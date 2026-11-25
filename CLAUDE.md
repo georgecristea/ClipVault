@@ -48,5 +48,11 @@ rebuilds. To see the bar without a key press: post the distributed notification
   above the bar.
 - `package-app.sh` asks SwiftPM for the binary path (`--show-bin-path`): the universal output folder
   moved between toolchains, and a hard-coded path once shipped a months-old binary.
+- **Accessibility "on" but not working:** macOS stores the app's signature when its Accessibility
+  entry is first created, and toggling the entry later does not refresh it. After a signing change
+  the switch shows on while `AXIsProcessTrusted()` is false. `AccessibilityAccess.request()`
+  (Settings → Grant…, first paste) resets ClipVault's own entry before prompting, and
+  `install.sh` runs `scripts/check-accessibility-grant.sh`, which removes a stale entry after
+  each install (it needs Full Disk Access for the terminal to read TCC.db; otherwise it skips).
 - ClipVault tags its own pasteboard writes (`com.georgecristea.ClipVault.marker`) so it never
   captures them.

@@ -53,13 +53,11 @@ struct SettingsView: View {
 
                 if settings.pasteIntoActiveApp {
                     MUKSettingsRow(title: accessibilityGranted ? "Accessibility granted" : "Accessibility needed",
-                                   detail: accessibilityGranted ? "ClipVault can paste for you" : "Required to paste; until then clips are copied",
+                                   detail: accessibilityGranted ? "ClipVault can paste for you"
+                                       : "Click Grant…, then switch ClipVault on in the list that opens",
                                    systemImage: accessibilityGranted ? "checkmark.shield" : "exclamationmark.shield") {
                         if !accessibilityGranted {
-                            Button("Grant…") {
-                                BarController.requestAccessibility()
-                                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
-                            }
+                            Button("Grant…") { AccessibilityAccess.request() }
                         }
                     }
                 }
