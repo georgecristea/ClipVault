@@ -230,12 +230,39 @@ final class BarController {
                     }
                     return
                 }
-                if let target, !target.isActive { target.activate() }
-                // Give the target app a moment to become key again before the keystroke arrives.
-                let injector = self.pasteInjector
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { injector.paste() }
+                self.returnFocus(to: target)
             }
         }
+    }
+
+    /// Hands keyboard focus back to the target app, waits until it really has it, then sends ⌘V.
+    /// Sending too early lands the keystroke in ClipVault itself, which beeps.
+    private func returnFocus(to target: NSRunningApplication?) {
+        if NSApp.isActive { NSApp.hide(nil) }
+        target?.activate()
+        let deadline = Date().addingTimeInterval(1.0)
+        let injector = pasteInjector
+        func attempt() {
+            let ready = Self.readyToPaste(frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                                          targetPID: target?.processIdentifier,
+                                          clipVaultIsActive: NSApp.isActive,
+                                          clipVaultHasKeyWindow: NSApp.keyWindow != nil)
+            if ready {
+                // A short settle so the target's own window is key, not just its app frontmost.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { injector.paste() }
+            } else if Date() < deadline {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { attempt() }
+            }
+            // Past the deadline the clip is still on the clipboard; the user can press ⌘V.
+        }
+        attempt()
+    }
+
+    /// The target app is frontmost (when known) and ClipVault holds no focus.
+    nonisolated static func readyToPaste(frontmostPID: pid_t?, targetPID: pid_t?, clipVaultIsActive: Bool, clipVaultHasKeyWindow: Bool) -> Bool {
+        guard !clipVaultIsActive, !clipVaultHasKeyWindow else { return false }
+        guard let targetPID else { return true }
+        return frontmostPID == targetPID
     }
 
     private func copy(_ items: [ClipboardItem]) {
