@@ -11,7 +11,6 @@ final class BarController {
     private let panel = BarPanel()
     private let images = CardImageCache()
     private let preview = ClipPreviewPresenter()
-    private let pasteInjector = MUKPasteInjector()
     /// The app that was active when the bar opened; pastes go there.
     private var targetApp: NSRunningApplication?
     private var mouseMonitor: Any?
@@ -123,6 +122,8 @@ final class BarController {
         guard isVisible else { completion?(); return }
         isVisible = false
         preview.hide()
+        // Give up keyboard focus before leaving the screen, so it returns to the app underneath.
+        panel.resignKey()
         if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
         mouseMonitor = nil
         if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
@@ -223,7 +224,7 @@ final class BarController {
             guard let self, await self.appState.writeToClipboard(items, plainText: plainText) else { return }
             self.hide(animated: false) {
                 guard self.appState.settings.pasteIntoActiveApp else { return }
-                guard MUKPasteInjector.isTrusted else {
+                guard AXIsProcessTrusted() else {
                     if !self.askedForAccessibility {
                         self.askedForAccessibility = true
                         AccessibilityAccess.request()
@@ -238,10 +239,13 @@ final class BarController {
     /// Hands keyboard focus back to the target app, waits until it really has it, then sends ⌘V.
     /// Sending too early lands the keystroke in ClipVault itself, which beeps.
     private func returnFocus(to target: NSRunningApplication?) {
+        if let target {
+            // macOS 14 cooperative activation: hand activation to the target explicitly.
+            NSApp.yieldActivation(to: target)
+            target.activate()
+        }
         if NSApp.isActive { NSApp.hide(nil) }
-        target?.activate()
         let deadline = Date().addingTimeInterval(1.0)
-        let injector = pasteInjector
         func attempt() {
             let ready = Self.readyToPaste(frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
                                           targetPID: target?.processIdentifier,
@@ -249,7 +253,7 @@ final class BarController {
                                           clipVaultHasKeyWindow: NSApp.keyWindow != nil)
             if ready {
                 // A short settle so the target's own window is key, not just its app frontmost.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { injector.paste() }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { PasteKeystroke.send() }
             } else if Date() < deadline {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { attempt() }
             }
