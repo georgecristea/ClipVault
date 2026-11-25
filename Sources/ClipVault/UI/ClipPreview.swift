@@ -9,15 +9,16 @@ enum ClipPreview {
     case files([String])
     case empty
 
-    static func make(item: ClipboardItem, data: Data) -> ClipPreview {
+    static func make(item: ClipboardItem, items: [PasteboardItemData]) -> ClipPreview {
         switch item.kind {
-        case .text:
-            let full = String(decoding: data, as: UTF8.self)
-            return .text(String(full.prefix(4000)))
+        case .text, .link, .color:
+            return .text(String(PasteboardWriter.text(of: items).prefix(4000)))
         case .image:
-            return NSImage(data: data).map(ClipPreview.image) ?? .empty
+            let data = items.lazy.flatMap { $0 }.first { ClipboardClassifier.imageTypes.contains($0.type) }?.data
+            return data.flatMap(NSImage.init(data:)).map(ClipPreview.image) ?? .empty
         case .files:
-            let paths = (try? JSONDecoder().decode([String].self, from: data)) ?? []
+            let paths = items.compactMap { $0.first { $0.type == ClipboardClassifier.fileURL }?.data }
+                .compactMap { URL(dataRepresentation: $0, relativeTo: nil)?.path }
             return .files(paths)
         }
     }
@@ -76,44 +77,27 @@ struct ClipPreviewView: View {
     }
 }
 
-/// Resolves the hosting NSWindow of a SwiftUI view (so the preview can position itself
-/// relative to the popover window).
-struct WindowAccessor: NSViewRepresentable {
-    let onResolve: (NSWindow?) -> Void
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        DispatchQueue.main.async { onResolve(view.window) }
-        return view
-    }
-
-    func updateNSView(_ view: NSView, context: Context) {
-        DispatchQueue.main.async { onResolve(view.window) }
-    }
-}
-
-/// Drives the shared `MUKPreviewPanel` for the currently selected clip. Loads payloads
-/// asynchronously, caches them by id, and shows the panel to the left of the popover window.
+/// Shows the full selected clip in the shared `MUKPreviewPanel`, above the bar.
 @MainActor
-final class ClipPreviewPresenter: ObservableObject {
+final class ClipPreviewPresenter {
     private let panel = MUKPreviewPanel()
     private var loadTask: Task<Void, Never>?
     private var cache: [String: ClipPreview] = [:]
-    weak var appState: AppState?
+    var store: ClipStore?
 
-    func update(item: ClipboardItem?, window: NSWindow?) {
+    var isVisible: Bool { panel.isVisible }
+
+    func show(item: ClipboardItem?, above window: NSWindow) {
         loadTask?.cancel()
-        guard let item, let window else { panel.hide(); return }
-
+        guard let item else { panel.hide(); return }
         if let cached = cache[item.id] {
             present(cached, window: window)
             return
         }
-
         loadTask = Task { [weak self] in
-            guard let self, let data = await self.appState?.payloadData(for: item) else { return }
+            guard let self, let store = self.store, let items = try? await store.payloadItems(for: item) else { return }
             if Task.isCancelled { return }
-            let preview = ClipPreview.make(item: item, data: data)
+            let preview = ClipPreview.make(item: item, items: items)
             self.cache[item.id] = preview
             self.present(preview, window: window)
         }
@@ -127,7 +111,13 @@ final class ClipPreviewPresenter: ObservableObject {
     func forget(_ id: String) { cache[id] = nil }
 
     private func present(_ preview: ClipPreview, window: NSWindow) {
-        panel.show(size: ClipPreviewView.size, relativeTo: window.frame, edge: .minX) {
+        // MUKPreviewPanel places the panel left of the anchor, top-aligned; this anchor puts it
+        // centred just above the bar.
+        let size = ClipPreviewView.size
+        let gap: CGFloat = 10
+        let anchor = NSRect(x: window.frame.midX + size.width / 2 + gap, y: window.frame.maxY + gap,
+                            width: 1, height: size.height)
+        panel.show(size: size, relativeTo: anchor, edge: .minX, gap: gap, attachedTo: window) {
             ClipPreviewView(preview: preview)
         }
     }

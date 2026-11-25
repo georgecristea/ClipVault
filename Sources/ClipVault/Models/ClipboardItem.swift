@@ -4,6 +4,8 @@ enum ClipboardKind: String, Sendable {
     case text
     case image
     case files
+    case link
+    case color
 }
 
 struct ClipboardItem: Identifiable, Equatable, Sendable {
@@ -15,13 +17,33 @@ struct ClipboardItem: Identifiable, Equatable, Sendable {
     let preview: String
     let payloadPath: String
     let byteCount: Int
-    var pinned: Bool = false
     var sourceBundleID: String? = nil
+    /// User-given name, shown on the card and searched.
+    var title: String? = nil
+    /// The pinboard the clip is on, if any. Clips on a pinboard never expire.
+    var pinboardID: Int64? = nil
+    /// The last time this content was copied (or pasted from ClipVault). History is newest first.
+    var lastCopiedAt: Date = .distantPast
+
+    var pinned: Bool { pinboardID != nil }
 }
 
+/// A clip as captured from the pasteboard, before it is stored.
 struct ClipboardCapture: Sendable {
     let kind: ClipboardKind
-    let data: Data
+    /// Every pasteboard item, each with all of its types, in the order the source offered them.
+    let items: [PasteboardItemData]
+    /// Short, single-line description for lists (at most 240 characters plus an ellipsis).
     let preview: String
-    let fileExtension: String
+    /// Text used for search: the full text, link, colour or file names (at most 20,000 characters).
+    let searchText: String
+    /// The bytes that identify the content, used to detect duplicates.
+    let contentKey: Data
+}
+
+/// A named list of clips.
+struct Pinboard: Identifiable, Equatable, Sendable {
+    let id: Int64
+    var name: String
+    var position: Int
 }
