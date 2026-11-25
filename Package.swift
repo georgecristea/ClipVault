@@ -11,7 +11,7 @@ let package = Package(
         .executable(name: "ClipVault", targets: ["ClipVault"])
     ],
     dependencies: [
-        .package(url: "https://github.com/georgecristea/MacUtilityKit.git", from: "0.1.0")
+        .package(url: "https://github.com/georgecristea/MacUtilityKit.git", from: "0.2.0")
     ],
     targets: [
         .executableTarget(

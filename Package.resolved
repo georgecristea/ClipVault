@@ -5,8 +5,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/georgecristea/MacUtilityKit.git",
       "state" : {
-        "revision" : "e456427fded247a10dc552a5209cb543ea67bb2c",
-        "version" : "0.1.0"
+        "revision" : "52dce7445e0c7b8324e5ebaccbd535676b071a0b",
+        "version" : "0.2.0"
       }
     }
   ],
