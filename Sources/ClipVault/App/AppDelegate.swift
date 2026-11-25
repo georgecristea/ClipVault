@@ -5,7 +5,10 @@ import SwiftUI
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var appState: AppState?
+    private var bar: BarController?
     private var statusBarController: StatusBarController?
+    private var settingsWindow: SettingsWindowController?
+    private var hotKey: MUKCarbonHotKey?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         MUKTheme.brand = MUKBrand(
@@ -17,34 +20,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if DemoMode.isEnabled {
             Task { @MainActor in
-                do { launch(store: try await DemoMode.makeStore()) } catch { fail(error) }
+                do { launch(store: try await DemoMode.makeStore(), settings: AppSettings(defaults: DemoMode.defaults)) } catch { fail(error) }
             }
             return
         }
         do {
-            launch(store: try SQLiteClipStore())
+            // Installations from before 0.2 keep their old defaults (7 days, the shorter exclusion list).
+            AppSettings.preserveLegacyDefaults(existingInstall: SQLiteClipStore.databaseExists())
+            launch(store: try SQLiteClipStore(), settings: AppSettings())
         } catch {
             fail(error)
         }
     }
 
-    private func launch(store: SQLiteClipStore) {
-        let state = AppState(store: store)
-        let statusBarController = StatusBarController(appState: state)
+    private func launch(store: SQLiteClipStore, settings: AppSettings) {
+        let state = AppState(store: store, settings: settings)
+        let bar = BarController(appState: state)
+        let hotKey = MUKCarbonHotKey(binding: settings.shortcut) { [weak bar] in bar?.toggle() }
+        let settingsWindow = SettingsWindowController(appState: state) { [weak hotKey] binding in
+            hotKey?.update(binding: binding) ?? false
+        }
+        let statusBar = StatusBarController(appState: state, showBar: { [weak bar] in bar?.show() },
+                                            showSettings: { [weak settingsWindow] in settingsWindow?.show($0) })
+        bar.openSettings = { [weak settingsWindow] in settingsWindow?.show(.settings) }
+        state.onHistoryChanged = { [weak bar, weak statusBar] in
+            bar?.historyChanged()
+            statusBar?.updateIcon()
+        }
 
-        state.requestClosePopover = { [weak statusBarController] in statusBarController?.closePopover() }
+        appState = state
+        self.bar = bar
+        self.hotKey = hotKey
+        self.settingsWindow = settingsWindow
+        statusBarController = statusBar
 
-        self.appState = state
-        self.statusBarController = statusBarController
+        // Automation hook (scripts, screenshots): toggle the bar without a key press.
+        DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("com.georgecristea.ClipVault.toggleBar"), object: nil, queue: .main) { [weak bar] _ in
+            Task { @MainActor in bar?.toggle() }
+        }
 
         guard DemoMode.isEnabled else {
             state.start()
             return
         }
         // Demo: show the sample history without ever reading the real clipboard.
-        state.reload()
         if let path = DemoMode.snapshotPath {
-            DemoMode.writeSnapshot(of: state, to: path)
+            DemoMode.writeSnapshot(of: bar, to: path)
         }
     }
 

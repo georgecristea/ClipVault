@@ -1,3 +1,5 @@
+import CryptoKit
+import SQLite3
 import XCTest
 @testable import ClipVault
 
@@ -19,93 +21,233 @@ final class SQLiteClipStoreTests: XCTestCase {
         try SQLiteClipStore(rootDirectory: tempRoot)
     }
 
-    private func textCapture(_ value: String) -> ClipboardCapture {
-        ClipboardCapture(kind: .text, data: Data(value.utf8), preview: value, fileExtension: "txt")
+    private func text(_ value: String) -> ClipboardCapture {
+        ClipboardClassifier.capture(from: Snap.of([Snap.text(value)]))!
+    }
+
+    @discardableResult
+    private func save(_ store: SQLiteClipStore, _ value: String, at date: Date = Date(), source: String? = nil) async throws -> ClipboardItem {
+        try await store.save(text(value), sourceBundleID: source, at: date)
     }
 
     func testSaveAndFetchRoundTrip() async throws {
         let store = try makeStore()
-        try await store.save(textCapture("hello"), sourceBundleID: "com.example.app")
+        let rich = ClipboardClassifier.capture(from: Snap.of([Snap.item(("public.rtf", Data("{\\rtf1 hi}".utf8)),
+                                                                         ("public.utf8-plain-text", Data("hi".utf8)))]))!
+        let saved = try await store.save(rich, sourceBundleID: "com.example.app", at: Date())
 
-        let items = try await store.fetchItems()
-        XCTAssertEqual(items.count, 1)
-        XCTAssertEqual(items.first?.preview, "hello")
-        XCTAssertEqual(items.first?.kind, .text)
+        let items = try await store.fetchItems(limit: 50, query: nil, pinboardID: nil)
+        XCTAssertEqual(items.map(\.id), [saved.id])
+        XCTAssertEqual(items.first?.preview, "hi")
         XCTAssertEqual(items.first?.sourceBundleID, "com.example.app")
         XCTAssertFalse(items.first?.pinned ?? true)
-
-        let data = try await store.payloadData(for: try XCTUnwrap(items.first))
-        XCTAssertEqual(String(decoding: data, as: UTF8.self), "hello")
+        let payload = try await store.payloadItems(for: saved)
+        XCTAssertEqual(payload, rich.items)
     }
 
-    func testDedupReturnsFalseForIdenticalContent() async throws {
+    func testDuplicateMovesToFrontKeepingTitleAndPinboard() async throws {
         let store = try makeStore()
-        let first = try await store.save(textCapture("dupe"), sourceBundleID: nil)
-        let second = try await store.save(textCapture("dupe"), sourceBundleID: nil)
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        let first = try await save(store, "one", at: t0)
+        try await store.setTitle("My title", for: first.id)
+        let board = try await store.createPinboard(name: "Board")
+        try await store.pin([first.id], to: board.id)
+        try await save(store, "two", at: t0.addingTimeInterval(10))
 
-        XCTAssertTrue(first)
-        XCTAssertFalse(second)
-        let items = try await store.fetchItems()
-        XCTAssertEqual(items.count, 1)
+        let again = try await save(store, "one", at: t0.addingTimeInterval(20))
+        XCTAssertEqual(again.id, first.id)
+        XCTAssertEqual(again.title, "My title")
+        XCTAssertEqual(again.pinboardID, board.id)
+        let items = try await store.fetchItems(limit: 50, query: nil, pinboardID: nil)
+        XCTAssertEqual(items.map(\.preview), ["one", "two"])
     }
 
-    func testPinnedSortsFirstAndSurvivesRetention() async throws {
+    func testSearchAllWordsAcrossTextAndTitle() async throws {
         let store = try makeStore()
-        try await store.save(textCapture("old"), sourceBundleID: nil)
-        let saved = try await store.fetchItems()
-        let oldItem = try XCTUnwrap(saved.first)
-        try await store.save(textCapture("new"), sourceBundleID: nil)
+        let base = Date(timeIntervalSince1970: 1_000)
+        try await save(store, "alpha beta", at: base)
+        let gamma = try await save(store, "gamma", at: base.addingTimeInterval(1))
+        try await save(store, "Beta 100%", at: base.addingTimeInterval(2))
+        try await store.setTitle("delta note", for: gamma.id)
+        // A long text is searchable beyond the 240-character preview.
+        try await save(store, String(repeating: "filler ", count: 60) + "needle", at: base.addingTimeInterval(3))
 
-        // Pin the older item; it should jump to the front.
-        try await store.setPinned(true, for: oldItem)
-        let ordered = try await store.fetchItems()
-        XCTAssertEqual(ordered.first?.preview, "old")
-        XCTAssertTrue(ordered.first?.pinned ?? false)
-
-        // A retention sweep that covers everything must keep the pinned item.
-        try await store.deleteItems(olderThan: Date().addingTimeInterval(60 * 60))
-        let remaining = try await store.fetchItems()
-        XCTAssertEqual(remaining.map(\.preview), ["old"])
+        func search(_ q: String) async throws -> [String] {
+            try await store.fetchItems(limit: 50, query: q, pinboardID: nil).map(\.preview)
+        }
+        let beta = try await search("beta")
+        XCTAssertEqual(beta, ["Beta 100%", "alpha beta"])
+        let percent = try await search("100%")
+        XCTAssertEqual(percent, ["Beta 100%"])
+        let both = try await search("beta alpha")
+        XCTAssertEqual(both, ["alpha beta"])
+        let byTitle = try await search("delta")
+        XCTAssertEqual(byTitle, ["gamma"])
+        let needle = try await search("needle")
+        XCTAssertEqual(needle.count, 1)
     }
 
-    func testSearchFiltersByPreview() async throws {
+    func testPinboardOrderAndDeleteKeepsClips() async throws {
         let store = try makeStore()
-        try await store.save(textCapture("apple pie"), sourceBundleID: nil)
-        try await store.save(textCapture("banana bread"), sourceBundleID: nil)
+        let board = try await store.createPinboard(name: "Links")
+        let one = try await save(store, "one", at: Date(timeIntervalSince1970: 1))
+        let two = try await save(store, "two", at: Date(timeIntervalSince1970: 2))
+        try await store.pin([one.id], to: board.id)
+        try await store.pin([two.id], to: board.id)
+        let onBoard = try await store.fetchItems(limit: 50, query: nil, pinboardID: board.id).map(\.preview)
+        XCTAssertEqual(onBoard, ["one", "two"])
+        try await store.renamePinboard(id: board.id, name: "Renamed")
+        let names = try await store.pinboards().map(\.name)
+        XCTAssertEqual(names, ["Renamed"])
 
-        let results = try await store.fetchItems(limit: 250, query: "banana")
-        XCTAssertEqual(results.map(\.preview), ["banana bread"])
+        try await store.deletePinboard(id: board.id)
+        let boards = try await store.pinboards()
+        XCTAssertEqual(boards, [])
+        let all = try await store.fetchItems(limit: 50, query: nil, pinboardID: nil)
+        XCTAssertEqual(all.count, 2)
+        XCTAssertTrue(all.allSatisfy { $0.pinboardID == nil })
+    }
 
-        // LIKE wildcards in the query are treated literally.
-        let wildcard = try await store.fetchItems(limit: 250, query: "%")
-        XCTAssertTrue(wildcard.isEmpty)
+    func testRetentionSparesPinboards() async throws {
+        let store = try makeStore()
+        let board = try await store.createPinboard(name: "Keep")
+        let old = Date(timeIntervalSinceNow: -40 * 86_400)
+        let pinned = try await save(store, "old pinned", at: old)
+        try await store.pin([pinned.id], to: board.id)
+        try await save(store, "old", at: old)
+        try await save(store, "new")
+        let cutoff = Date(timeIntervalSinceNow: -30 * 86_400)
+        let counted = try await store.countItems(olderThan: cutoff)
+        XCTAssertEqual(counted, 1)
+        let deleted = try await store.deleteItems(olderThan: cutoff)
+        XCTAssertEqual(deleted, 1)
+        let left = Set(try await store.fetchItems(limit: 50, query: nil, pinboardID: nil).map(\.preview))
+        XCTAssertEqual(left, ["old pinned", "new"])
+    }
+
+    func testEraseHistoryKeepsPinned() async throws {
+        let store = try makeStore()
+        let board = try await store.createPinboard(name: "Keep")
+        let kept = try await save(store, "kept")
+        try await store.pin([kept.id], to: board.id)
+        try await save(store, "gone")
+        let erased = try await store.eraseHistory()
+        XCTAssertEqual(erased, 1)
+        let left = try await store.fetchItems(limit: 50, query: nil, pinboardID: nil).map(\.preview)
+        XCTAssertEqual(left, ["kept"])
+        let summary = try await store.summary()
+        XCTAssertEqual(summary.count, 1)
     }
 
     func testDeleteRemovesItemAndPayload() async throws {
         let store = try makeStore()
-        try await store.save(textCapture("trash"), sourceBundleID: nil)
-        let saved = try await store.fetchItems()
-        let item = try XCTUnwrap(saved.first)
-        let payloadPath = tempRoot
-            .appendingPathComponent("Payloads", isDirectory: true)
-            .appendingPathComponent(item.payloadPath)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: payloadPath.path))
-
-        try await store.delete(item)
-        let remaining = try await store.fetchItems()
-        XCTAssertTrue(remaining.isEmpty)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: payloadPath.path))
+        let item = try await save(store, "gone")
+        let payloadURL = tempRoot.appendingPathComponent("Payloads").appendingPathComponent(item.payloadPath)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: payloadURL.path))
+        try await store.delete([item.id])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: payloadURL.path))
+        let left = try await store.fetchItems(limit: 50, query: nil, pinboardID: nil)
+        XCTAssertEqual(left, [])
     }
 
-    func testMigrationIsIdempotentAcrossReopens() async throws {
-        // Open, write, close, reopen the same directory — the additive migration must not fail.
-        do {
-            let store = try makeStore()
-            try await store.save(textCapture("persisted"), sourceBundleID: "com.example.app")
-        }
+    func testTouchMovesToFront() async throws {
+        let store = try makeStore()
+        let a = try await save(store, "a", at: Date(timeIntervalSince1970: 1))
+        try await save(store, "b", at: Date(timeIntervalSince1970: 2))
+        try await store.touch([a.id])
+        let order = try await store.fetchItems(limit: 50, query: nil, pinboardID: nil).map(\.preview)
+        XCTAssertEqual(order, ["a", "b"])
+    }
+
+    /// A database written by ClipVault 0.1.x: legacy payload files, a pinned flag, no pinboards.
+    func testMigratesLegacyDatabase() async throws {
+        let payloads = tempRoot.appendingPathComponent("Payloads", isDirectory: true)
+        try FileManager.default.createDirectory(at: payloads, withIntermediateDirectories: true)
+        try Data("legacy text".utf8).write(to: payloads.appendingPathComponent("t.txt"))
+        let png = Snap.pngData()
+        try png.write(to: payloads.appendingPathComponent("i.png"))
+        try JSONEncoder().encode(["/tmp/a.txt", "/tmp/b.pdf"]).write(to: payloads.appendingPathComponent("f.json"))
+
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(tempRoot.appendingPathComponent("ClipVault.sqlite3").path, &db), SQLITE_OK)
+        let sql = """
+        CREATE TABLE clipboard_items (id TEXT PRIMARY KEY NOT NULL, kind TEXT NOT NULL, created_at REAL NOT NULL,
+            updated_at REAL NOT NULL, sha256 TEXT NOT NULL, preview TEXT NOT NULL, payload_path TEXT NOT NULL,
+            byte_count INTEGER NOT NULL, pinned INTEGER NOT NULL DEFAULT 0, source_bundle_id TEXT);
+        INSERT INTO clipboard_items VALUES ('T', 'text', 100, 100, 'h1', 'legacy text', 't.txt', 11, 1, 'com.a');
+        INSERT INTO clipboard_items VALUES ('I', 'image', 200, 200, 'h2', '4 x 3 image', 'i.png', 10, 0, NULL);
+        INSERT INTO clipboard_items VALUES ('F', 'files', 300, 300, 'h3', '2 files', 'f.json', 20, 0, NULL);
+        """
+        XCTAssertEqual(sqlite3_exec(db, sql, nil, nil, nil), SQLITE_OK)
+        sqlite3_close(db)
+
+        let store = try makeStore()
+        let items = try await store.fetchItems(limit: 50, query: nil, pinboardID: nil)
+        XCTAssertEqual(items.map(\.id), ["F", "I", "T"])
+        let boards = try await store.pinboards()
+        XCTAssertEqual(boards.map(\.name), ["Pinned"])
+        let pinned = try await store.fetchItems(limit: 50, query: nil, pinboardID: boards[0].id)
+        XCTAssertEqual(pinned.map(\.id), ["T"])
+
+        let textPayload = try await store.payloadItems(for: items[2])
+        XCTAssertEqual(textPayload, [[PasteboardRepresentation(type: "public.utf8-plain-text", data: Data("legacy text".utf8))]])
+        let imagePayload = try await store.payloadItems(for: items[1])
+        XCTAssertEqual(imagePayload, [[PasteboardRepresentation(type: "public.png", data: png)]])
+        let filePayload = try await store.payloadItems(for: items[0])
+        XCTAssertEqual(filePayload.map { $0.map(\.type) }, [["public.file-url"], ["public.file-url"]])
+        XCTAssertEqual(URL(dataRepresentation: filePayload[1][0].data, relativeTo: nil)?.path, "/tmp/b.pdf")
+
+        let search = try await store.fetchItems(limit: 50, query: "legacy", pinboardID: nil)
+        XCTAssertEqual(search.map(\.id), ["T"])
+
+        // Reopening must not migrate twice (one "Pinned" pinboard only).
         let reopened = try makeStore()
-        let items = try await reopened.fetchItems()
-        XCTAssertEqual(items.count, 1)
-        XCTAssertEqual(items.first?.sourceBundleID, "com.example.app")
+        let boardsAgain = try await reopened.pinboards()
+        XCTAssertEqual(boardsAgain.count, 1)
+    }
+
+    /// A 0.1 text row with its real hash (SHA-256 of kind + data, no separator) and a preview
+    /// shorter than the text.
+    private func makeLegacyTextDatabase(text: String, preview: String) throws {
+        let payloads = tempRoot.appendingPathComponent("Payloads", isDirectory: true)
+        try FileManager.default.createDirectory(at: payloads, withIntermediateDirectories: true)
+        try Data(text.utf8).write(to: payloads.appendingPathComponent("t.txt"))
+        let legacyHash = SHA256.hash(data: Data("text".utf8) + Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(tempRoot.appendingPathComponent("ClipVault.sqlite3").path, &db), SQLITE_OK)
+        let sql = """
+        CREATE TABLE clipboard_items (id TEXT PRIMARY KEY NOT NULL, kind TEXT NOT NULL, created_at REAL NOT NULL,
+            updated_at REAL NOT NULL, sha256 TEXT NOT NULL, preview TEXT NOT NULL, payload_path TEXT NOT NULL,
+            byte_count INTEGER NOT NULL, pinned INTEGER NOT NULL DEFAULT 0, source_bundle_id TEXT);
+        INSERT INTO clipboard_items VALUES ('T', 'text', 100, 100, '\(legacyHash)', '\(preview)', 't.txt', 1, 0, NULL);
+        """
+        XCTAssertEqual(sqlite3_exec(db, sql, nil, nil, nil), SQLITE_OK)
+        sqlite3_close(db)
+    }
+
+    func testRecopyingLegacyTextMovesItInsteadOfDuplicating() async throws {
+        try makeLegacyTextDatabase(text: "hello from 0.1", preview: "hello from 0.1")
+        let store = try makeStore()
+        let saved = try await save(store, "hello from 0.1")
+        XCTAssertEqual(saved.id, "T")
+        let all = try await store.fetchItems(limit: 50, query: nil, pinboardID: nil)
+        XCTAssertEqual(all.count, 1)
+    }
+
+    func testLegacyTextIsSearchableBeyondItsPreview() async throws {
+        let text = String(repeating: "filler ", count: 60) + "needle"
+        try makeLegacyTextDatabase(text: text, preview: String(text.prefix(240)) + "...")
+        let store = try makeStore()
+        let found = try await store.fetchItems(limit: 50, query: "needle", pinboardID: nil)
+        XCTAssertEqual(found.map(\.id), ["T"])
+    }
+
+    func testSearchIsCaseInsensitiveBeyondASCII() async throws {
+        let store = try makeStore()
+        try await save(store, "Åsa Ștefan Öberg")
+        for query in ["åsa", "ȘTEFAN", "öberg", "ÅSA öBERG"] {
+            let found = try await store.fetchItems(limit: 50, query: query, pinboardID: nil)
+            XCTAssertEqual(found.count, 1, query)
+        }
     }
 }

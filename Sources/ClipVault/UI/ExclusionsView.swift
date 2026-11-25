@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 import MacUtilityKit
 import SwiftUI
 
@@ -34,6 +35,19 @@ struct ExclusionsView: View {
                 }
                 .buttonStyle(.plain)
 
+                Button {
+                    chooseApps()
+                } label: {
+                    MUKSettingsRow(
+                        title: "Add an app…",
+                        detail: "Pick any app from Applications",
+                        systemImage: "folder.badge.plus")
+                    {
+                        Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                    }
+                }
+                .buttonStyle(.plain)
+
                 ForEach(settings.excludedBundleIDs, id: \.self) { bundleID in
                     MUKSettingsRow(
                         title: displayName(for: bundleID),
@@ -61,7 +75,7 @@ struct ExclusionsView: View {
     }
 
     private func addFrontmostApp() {
-        // ClipVault is frontmost while the popover is open, so use the most recent *other* app.
+        // ClipVault is frontmost while its settings are open, so use the most recent *other* app.
         let others = NSWorkspace.shared.runningApplications.filter {
             $0.activationPolicy == .regular && $0.bundleIdentifier != Bundle.main.bundleIdentifier
         }
@@ -70,6 +84,16 @@ struct ExclusionsView: View {
         var ids = appState.settings.excludedBundleIDs
         ids.append(bundleID)
         appState.settings.setExcludedBundleIDs(ids)
+    }
+
+    private func chooseApps() {
+        let panel = NSOpenPanel()
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowedContentTypes = [.application]
+        panel.allowsMultipleSelection = true
+        guard panel.runModal() == .OK else { return }
+        let ids = panel.urls.compactMap { Bundle(url: $0)?.bundleIdentifier }
+        appState.settings.setExcludedBundleIDs(appState.settings.excludedBundleIDs + ids)
     }
 
     private func remove(_ bundleID: String) {

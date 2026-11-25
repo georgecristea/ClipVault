@@ -5,45 +5,63 @@
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B-blue)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-**Private clipboard history for the macOS menu bar.** ClipVault keeps the text, images and files you
-copy so you can find them again. Click the menu bar icon, type a few letters, press Return, and the
-item is back on your clipboard.
+**Private clipboard history for macOS.** ClipVault keeps the text, links, colours, images and files
+you copy. Press **⇧⌘V** in any app and your history slides up from the bottom of the screen as a
+row of cards. Type to search, press Return, and the clip is pasted where you were working.
 
-It stays on your Mac: no account, no network access, no permissions to grant. Password managers
-are skipped by default.
+It stays on your Mac: no account, no network access. Password managers are skipped by default.
 
-<p align="center"><img src="docs/screenshot.png" width="420" alt="ClipVault popover: searchable clipboard history with a pinned link, text snippets, an image and a file"></p>
+<p align="center"><img src="docs/screenshot.png" width="900" alt="ClipVault's bar: a row of clip cards (a link, text, code, an image, a terminal command, a colour) with search and pinboard tabs"></p>
 
 ## Features
 
-- **Text, images and files.** Plain text, images (stored as PNG) and Finder file references.
-- **Type to search.** Start typing as soon as the popover opens.
-- **Keyboard first.** Arrow keys, Return, ⌘1–⌘9, pin, delete (see below).
-- **Preview panel.** Hover or select an item to see the full text, the image, or the file list.
-- **Pin** the items you reuse; pinned items sort first and never expire.
-- **Pause** capture with one click when you're about to copy something sensitive.
-- **Exclusions.** 1Password, Bitwarden, KeePassXC, LastPass, Dashlane and Keychain Access are
-  excluded out of the box; add any app, or exclude the frontmost one with one click. Clipboard data
-  that apps mark as concealed, transient or auto-generated ([nspasteboard.org](http://nspasteboard.org))
-  is never saved.
-- **Retention you control.** 7 days by default, anything from 1 day to 10 years, or keep forever.
+- **The bar.** ⇧⌘V (or the menu-bar icon) opens a full-width bar on the screen you're working on.
+  Each card shows the source app, when you copied it and a preview of the content.
+- **Paste straight into your app.** Return pastes the selected card into the app you came from.
+  ⇧Return pastes as plain text. Select several cards (⌘-click, ⇧-click or ⇧←/→) to paste them
+  together: text is joined, images arrive as separate items.
+- **Everything you copied, intact.** Rich text, HTML, links and multiple files are stored with all
+  their formats, so they paste back exactly as copied. Links and colours get their own cards.
+- **Type to search.** Every word you type must appear in the clip's text or title.
+- **Pinboards.** Keep clips you reuse on named pinboards, shown as tabs (⌘←/⌘→ to switch). Clips on
+  a pinboard never expire. Rename any clip to find it later.
+- **Preview.** Space shows the whole text, the full image or the file list.
+- **No duplicates.** Copying something already in your history moves it to the front.
+- **Pause** capture for 15 minutes, an hour, 8 hours or until you resume, from the menu-bar menu.
+- **Exclusions.** Apple Passwords, Keychain Access, 1Password, Bitwarden, KeePassXC, LastPass,
+  Dashlane, Enpass, Keeper and RoboForm are excluded out of the box; add any app, or exclude the
+  frontmost one with one click. Clipboard data that apps mark as concealed, transient or
+  auto-generated ([nspasteboard.org](http://nspasteboard.org)) is never saved.
+- **Retention you control.** 30 days by default; pick 5 to 365 days on a slider, type any number of
+  days, or keep forever. ClipVault asks before deleting anything because of a shorter period.
 - **Launch at login**, from Settings.
 
-Picking an item copies it and returns you to the app you were in. Paste with ⌘V as usual.
-ClipVault never types into other apps, which is why it needs no Accessibility permission.
+### Pasting needs Accessibility
+
+To type ⌘V into the app you came from, ClipVault needs **Accessibility** permission (System
+Settings → Privacy & Security → Accessibility); Settings has a **Grant…** button. Without it, or
+with "Paste into the active app" turned off, picking a clip copies it and you paste with ⌘V
+yourself.
 
 ### Keyboard
 
 | Key | Action |
 |-----|--------|
+| ⇧⌘V | show or hide the bar (change it in Settings) |
 | type | search |
-| ↑ / ↓ | move the selection |
-| Return | copy the selected item |
-| ⌘1 … ⌘9 | copy the item at that position |
-| ⌘P | pin or unpin |
+| ← / → | move the selection (⇧ to extend it) |
+| Return | paste the selected clip(s) |
+| ⇧Return | paste as plain text |
+| ⌘1 … ⌘9 | paste the clip at that position |
+| Space | preview |
+| ⌘← / ⌘→ | switch between History and pinboards |
+| ⌘C | copy without pasting |
+| ⌘P | pin to "Pinned", or unpin |
 | ⌘⌫ | delete |
 | ⌘, | settings |
-| Esc | clear the search, then close |
+| Esc | close the preview, clear the search, then close the bar |
+
+Right-click a card to pin it to a pinboard, rename it or delete it.
 
 ## Install
 
@@ -76,23 +94,26 @@ cd ClipVault
 - Deleting an item removes its payload file; the database uses `secure_delete` and is vacuumed after
   deletes. Copies that already exist in APFS snapshots or other backups are outside ClipVault's
   reach.
-- Items over 100 MB are skipped. An item identical to the latest one isn't stored twice.
+- Clips over 100 MB are skipped. Content already in the history isn't stored twice.
 - No network code, no analytics, no crash reporting.
 
 Found a security problem? See [SECURITY.md](SECURITY.md).
 
 ## How it works
 
-A timer checks the pasteboard's change count every 0.75 s. New content is classified (files win over
-images, images over text), checked against the exclusion rules and the frontmost app, then written
-to the store.
+A timer checks the pasteboard's change count every 0.75 s. New content is read with all of its
+items and formats, checked against the privacy markers, the exclusion rules and the frontmost app,
+classified (files, then text, links and colours, then images) and written to the store. Pasting
+writes the clip back (tagged so ClipVault doesn't capture it again) and sends ⌘V with the key that
+types "v" on your keyboard layout.
 
 ```
 Sources/ClipVault/
-  App/        AppDelegate, AppState (central ObservableObject), AppSettings
-  Services/   ClipboardMonitor (pasteboard polling), ClipboardClassifier
-  Storage/    ClipStore protocol, SQLiteClipStore (system libsqlite3)
-  UI/         StatusBarController (NSStatusItem + popover), HistoryView, ClipPreview, SettingsView, …
+  App/        AppDelegate, AppState (clip actions), AppSettings, RetentionPolicy, DemoMode
+  Services/   ClipboardMonitor, PasteboardItems (snapshot + markers), ClipboardClassifier, PasteboardWriter
+  Storage/    ClipStore protocol, SQLiteClipStore (system libsqlite3), PayloadCodec
+  UI/Bar/     BarController, BarPanel, BarModel, BarView, ClipCardView, ScreenLocator
+  UI/         StatusBarController (menu), SettingsWindow, SettingsView, ExclusionsView, ClipPreview, AboutView
 ```
 
 The UI is built on [MacUtilityKit](https://github.com/georgecristea/MacUtilityKit), the shared
@@ -103,10 +124,10 @@ toolkit behind this app, [VoxKey](https://github.com/georgecristea/VoxKey) and
 
 ```sh
 swift build    # compile
-swift test     # classifier and SQLite store tests
+swift test     # classifier, store, writer, bar model and settings tests
 ./scripts/install.sh
 .build/debug/ClipVault --demo                        # sample history; never reads your clipboard
-.build/debug/ClipVault --demo --snapshot out.png     # render the popover to a PNG and quit
+.build/debug/ClipVault --demo --snapshot out.png     # render the bar to a PNG and quit
 ```
 
 Always run the app from `/Applications`, not from `.build` or `dist/`. Packaging scripts:

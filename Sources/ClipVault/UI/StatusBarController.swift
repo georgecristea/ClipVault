@@ -1,103 +1,100 @@
 import AppKit
 import MacUtilityKit
-import SwiftUI
 
+/// The menu-bar icon and its menu: show the bar, pause, settings, about, quit.
 @MainActor
-final class StatusBarController: NSObject {
-    private let statusItem: NSStatusItem
-    private let popover: NSPopover
+final class StatusBarController: NSObject, NSMenuDelegate {
+    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let appState: AppState
-    private var outsideClickMonitor: Any?
-    private var resignObserver: NSObjectProtocol?
-    private var previousApp: NSRunningApplication?
+    private let showBar: () -> Void
+    private let showSettings: (SettingsScreen) -> Void
+    private var handlers: [MenuAction] = []
 
-    init(appState: AppState) {
+    init(appState: AppState, showBar: @escaping () -> Void, showSettings: @escaping (SettingsScreen) -> Void) {
         self.appState = appState
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        popover = NSPopover()
+        self.showBar = showBar
+        self.showSettings = showSettings
         super.init()
-
-        // We manage dismissal ourselves (outside-click + app-resign). .transient would
-        // auto-dismiss whenever the preview panel orders in or focus shifts on navigation,
-        // which made the gear button "close" the popover instead of opening Settings.
-        popover.behavior = .applicationDefined
-        popover.contentSize = NSSize(width: MUKTheme.popoverWidth, height: MUKTheme.popoverHeight)
-        popover.contentViewController = NSHostingController(rootView: MainPopoverView(appState: appState))
-        popover.delegate = self
-
-        if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: "ClipVault")
-            button.image?.isTemplate = true
-            button.action = #selector(togglePopover(_:))
-            button.target = self
-        }
+        let menu = NSMenu()
+        menu.delegate = self
+        statusItem.menu = menu
+        updateIcon()
     }
 
-    @objc func togglePopover(_ sender: AnyObject? = nil) {
-        if popover.isShown {
-            closePopover()
+    /// Refreshes the icon (paused or not).
+    func updateIcon() {
+        let paused = appState.settings.isCapturePaused
+        statusItem.button?.image = NSImage(systemSymbolName: paused ? "pause.circle" : "doc.on.clipboard",
+                                           accessibilityDescription: "ClipVault")
+        statusItem.button?.image?.isTemplate = true
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        handlers.removeAll()
+        let settings = appState.settings
+
+        let show = item("Show Clipboard") { [weak self] in self?.showBar() }
+        if let keyCode = settings.shortcut.keyCode, let key = MUKKeyboardLayout.character(for: CGKeyCode(keyCode)) {
+            show.keyEquivalent = key
+            show.keyEquivalentModifierMask = Self.flags(settings.shortcut.modifiers)
+        }
+        menu.addItem(show)
+        menu.addItem(.separator())
+
+        if settings.isCapturePaused {
+            let until = settings.pausedUntil.flatMap { $0 == .distantFuture ? nil : $0 }
+            let title = until.map { "Resume Capture (paused until \($0.formatted(date: .omitted, time: .shortened)))" } ?? "Resume Capture"
+            menu.addItem(item(title) { [weak self] in self?.pause(until: nil) })
         } else {
-            showPopover()
+            let pause = NSMenuItem(title: "Pause Capture", action: nil, keyEquivalent: "")
+            let sub = NSMenu()
+            for (title, minutes) in [("For 15 Minutes", 15.0), ("For 1 Hour", 60.0), ("For 8 Hours", 480.0)] {
+                sub.addItem(item(title) { [weak self] in self?.pause(until: Date().addingTimeInterval(minutes * 60)) })
+            }
+            sub.addItem(item("Until Resumed") { [weak self] in self?.pause(until: .distantFuture) })
+            pause.submenu = sub
+            menu.addItem(pause)
+        }
+        menu.addItem(.separator())
+        let settingsItem = item("Settings…") { [weak self] in self?.showSettings(.settings) }
+        settingsItem.keyEquivalent = ","
+        menu.addItem(settingsItem)
+        menu.addItem(item("About ClipVault") { [weak self] in self?.showSettings(.about) })
+        menu.addItem(.separator())
+        let quit = item("Quit ClipVault") { NSApp.terminate(nil) }
+        quit.keyEquivalent = "q"
+        menu.addItem(quit)
+    }
+
+    private func pause(until date: Date?) {
+        appState.pause(until: date)
+        updateIcon()
+        if let date, date != .distantFuture {
+            DispatchQueue.main.asyncAfter(deadline: .now() + date.timeIntervalSinceNow + 1) { [weak self] in self?.updateIcon() }
         }
     }
 
-    func closePopover() {
-        guard popover.isShown else { return }
-        appState.preview.hide() // hide the preview at the same instant, not after the popover closes
-        popover.performClose(nil)
+    private func item(_ title: String, _ handler: @escaping () -> Void) -> NSMenuItem {
+        let action = MenuAction(handler)
+        handlers.append(action)
+        let item = NSMenuItem(title: title, action: #selector(MenuAction.run), keyEquivalent: "")
+        item.target = action
+        return item
     }
 
-    func showPopover() {
-        guard let button = statusItem.button else { return }
-        previousApp = NSWorkspace.shared.frontmostApplication
-        appState.popoverScreen = .history
-        appState.isPopoverOpen = true
-        appState.reload()
-
-        // An LSUIElement app must activate to receive key events and outside clicks.
-        // activate(ignoringOtherApps:) is deprecated and ignored on macOS 26, which left the popover
-        // inactive with dead header buttons; the status-item click is user interaction, so the
-        // cooperative activate() succeeds.
-        NSApp.activate()
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        let popoverWindow = popover.contentViewController?.view.window
-        popoverWindow?.makeKeyAndOrderFront(nil)
-        // AppKit auto-focuses the first text field (search) as the window's initial first
-        // responder, putting it in edit mode — which "eats" the first click on header buttons.
-        // Clear it so a single click on the gear/pause/quit works; the search field still
-        // focuses normally when the user clicks it.
-        popoverWindow?.makeFirstResponder(nil)
-
-        // Close on an outside click...
-        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            Task { @MainActor in self?.closePopover() }
-        }
-        // ...and whenever ClipVault stops being the active app (clicking another app, ⌘-Tab, etc.).
-        resignObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didResignActiveNotification, object: nil, queue: .main)
-        { [weak self] _ in
-            Task { @MainActor in self?.closePopover() }
-        }
-    }
-
-    private func teardownMonitor() {
-        if let outsideClickMonitor {
-            NSEvent.removeMonitor(outsideClickMonitor)
-            self.outsideClickMonitor = nil
-        }
-        if let resignObserver {
-            NotificationCenter.default.removeObserver(resignObserver)
-            self.resignObserver = nil
-        }
+    private static func flags(_ modifiers: MUKHotkey.Modifiers) -> NSEvent.ModifierFlags {
+        var flags: NSEvent.ModifierFlags = []
+        if modifiers.contains(.command) { flags.insert(.command) }
+        if modifiers.contains(.shift) { flags.insert(.shift) }
+        if modifiers.contains(.option) { flags.insert(.option) }
+        if modifiers.contains(.control) { flags.insert(.control) }
+        return flags
     }
 }
 
-extension StatusBarController: NSPopoverDelegate {
-    func popoverDidClose(_ notification: Notification) {
-        appState.isPopoverOpen = false
-        teardownMonitor()
-        appState.preview.hide()
-        // Return focus to whatever the user was working in (so they can paste).
-        previousApp?.activate()
-    }
+private final class MenuAction: NSObject {
+    private let handler: () -> Void
+    init(_ handler: @escaping () -> Void) { self.handler = handler }
+    @objc func run() { handler() }
 }

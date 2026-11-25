@@ -2,66 +2,184 @@ import AppKit
 import XCTest
 @testable import ClipVault
 
-final class ClipboardClassifierTests: XCTestCase {
-    private struct FakePasteboard: PasteboardReading {
-        var strings: [NSPasteboard.PasteboardType: String] = [:]
-        var datas: [NSPasteboard.PasteboardType: Data] = [:]
-        var urls: [URL] = []
-        var types: [String] = []
-
-        func string(forType type: NSPasteboard.PasteboardType) -> String? { strings[type] }
-        func data(forType type: NSPasteboard.PasteboardType) -> Data? { datas[type] }
-        func fileURLs() -> [URL] { urls }
-        func typeIdentifiers() -> [String] { types }
+/// Builds snapshots without touching a real pasteboard.
+enum Snap {
+    static func item(_ pairs: (String, Data)...) -> PasteboardItemData {
+        pairs.map { PasteboardRepresentation(type: $0.0, data: $0.1) }
     }
 
-    func testTextClassification() {
-        let pb = FakePasteboard(strings: [.string: "hello world"])
-        let capture = ClipboardClassifier.capture(from: pb)
-        XCTAssertEqual(capture?.kind, .text)
-        XCTAssertEqual(capture?.preview, "hello world")
-        XCTAssertEqual(capture?.fileExtension, "txt")
+    static func text(_ s: String) -> PasteboardItemData { item(("public.utf8-plain-text", Data(s.utf8))) }
+
+    static func of(_ items: [PasteboardItemData], extraTypes: [String] = [], source: String? = nil) -> PasteboardSnapshot {
+        PasteboardSnapshot(items: items, types: Set(items.flatMap { $0.map(\.type) } + extraTypes), declaredSource: source)
+    }
+
+    static func pngData() -> Data {
+        let image = NSImage(size: NSSize(width: 4, height: 3), flipped: false) { rect in
+            NSColor.systemBlue.setFill(); rect.fill(); return true
+        }
+        return image.clipVaultPNGData!
+    }
+}
+
+final class ClipboardClassifierTests: XCTestCase {
+    private func capture(_ items: PasteboardItemData...) -> ClipboardCapture? {
+        ClipboardClassifier.capture(from: Snap.of(items))
+    }
+
+    func testTextClassification() throws {
+        let c = try XCTUnwrap(capture(Snap.text("Hello world")))
+        XCTAssertEqual(c.kind, .text)
+        XCTAssertEqual(c.preview, "Hello world")
+        XCTAssertEqual(c.searchText, "Hello world")
+        XCTAssertEqual(c.contentKey, Data("Hello world".utf8))
     }
 
     func testEmptyTextIsNotCaptured() {
-        let pb = FakePasteboard(strings: [.string: ""])
-        XCTAssertNil(ClipboardClassifier.capture(from: pb))
+        XCTAssertNil(capture(Snap.text("")))
     }
 
-    func testMultilineTextPreviewCollapsesWhitespace() {
-        let pb = FakePasteboard(strings: [.string: "line one\n\n   line two\t"])
-        XCTAssertEqual(ClipboardClassifier.capture(from: pb)?.preview, "line one line two")
+    func testPreviewCollapsesWhitespaceButSearchKeepsFullText() throws {
+        let long = "line one\n\n  line two " + String(repeating: "x", count: 500)
+        let c = try XCTUnwrap(capture(Snap.text(long)))
+        XCTAssertTrue(c.preview.hasPrefix("line one line two x"))
+        XCTAssertLessThanOrEqual(c.preview.count, 243)
+        XCTAssertEqual(c.searchText, long)
     }
 
-    func testFilesTakePrecedenceOverText() {
-        let pb = FakePasteboard(
-            strings: [.string: "ignored"],
-            urls: [URL(fileURLWithPath: "/tmp/a.txt"), URL(fileURLWithPath: "/tmp/b.txt")])
-        let capture = ClipboardClassifier.capture(from: pb)
-        XCTAssertEqual(capture?.kind, .files)
-        XCTAssertEqual(capture?.preview, "2 files")
+    func testLinksAndColours() {
+        XCTAssertEqual(capture(Snap.text("https://example.com/a?b=1"))?.kind, .link)
+        XCTAssertEqual(capture(Snap.text("mailto:me@example.com"))?.kind, .link)
+        XCTAssertEqual(capture(Snap.text("see https://example.com"))?.kind, .text)
+        XCTAssertEqual(capture(Snap.text("#1a2B3c"))?.kind, .color)
+        XCTAssertEqual(capture(Snap.text("1a2b3c"))?.kind, .color)
+        XCTAssertEqual(capture(Snap.text("#1a2b3"))?.kind, .text)
     }
 
-    func testSingleFilePreviewUsesFilename() {
-        let pb = FakePasteboard(urls: [URL(fileURLWithPath: "/tmp/report.pdf")])
-        XCTAssertEqual(ClipboardClassifier.capture(from: pb)?.preview, "report.pdf")
+    func testFilesTakePrecedenceOverText() throws {
+        let a = URL(fileURLWithPath: "/tmp/a.txt").dataRepresentation
+        let b = URL(fileURLWithPath: "/tmp/b.pdf").dataRepresentation
+        let c = try XCTUnwrap(capture(Snap.item(("public.file-url", a), ("public.utf8-plain-text", Data("a.txt".utf8))),
+                                      Snap.item(("public.file-url", b))))
+        XCTAssertEqual(c.kind, .files)
+        XCTAssertEqual(c.preview, "2 files")
+        XCTAssertEqual(c.searchText, "a.txt\nb.pdf")
+        XCTAssertEqual(c.items.count, 2)
     }
 
-    func testImageClassificationFromPNGData() throws {
-        let image = NSImage(size: NSSize(width: 12, height: 8))
-        image.lockFocus(); NSColor.red.setFill(); NSRect(x: 0, y: 0, width: 12, height: 8).fill(); image.unlockFocus()
-        let png = try XCTUnwrap(image.clipVaultPNGData)
-        let pb = FakePasteboard(datas: [.png: png])
-        XCTAssertEqual(ClipboardClassifier.capture(from: pb)?.kind, .image)
+    func testSingleFilePreviewUsesFilename() throws {
+        let c = try XCTUnwrap(capture(Snap.item(("public.file-url", URL(fileURLWithPath: "/tmp/report.pdf").dataRepresentation))))
+        XCTAssertEqual(c.preview, "report.pdf")
     }
 
-    func testConcealedTypeIsIgnored() {
-        let pb = FakePasteboard(strings: [.string: "secret"], types: ["org.nspasteboard.ConcealedType"])
-        XCTAssertTrue(ClipboardClassifier.shouldIgnore(pb))
+    func testImageClassification() throws {
+        let png = Snap.pngData()
+        let c = try XCTUnwrap(capture(Snap.item(("public.png", png))))
+        XCTAssertEqual(c.kind, .image)
+        XCTAssertEqual(c.preview, "4 x 3 image")
+        XCTAssertEqual(c.contentKey, png)
     }
 
-    func testNormalTypesAreNotIgnored() {
-        let pb = FakePasteboard(types: ["public.utf8-plain-text"])
-        XCTAssertFalse(ClipboardClassifier.shouldIgnore(pb))
+    func testRichTextKeepsAllTypesAndDedupsWithPlain() throws {
+        let rich = try XCTUnwrap(capture(Snap.item(("public.rtf", Data("{\\rtf1 hi}".utf8)), ("public.utf8-plain-text", Data("hi".utf8)))))
+        let plain = try XCTUnwrap(capture(Snap.text("hi")))
+        XCTAssertEqual(rich.items.first?.map(\.type), ["public.rtf", "public.utf8-plain-text"])
+        XCTAssertEqual(rich.contentKey, plain.contentKey)
+    }
+
+    func testMarkersAreIgnored() {
+        for marker in ["org.nspasteboard.ConcealedType", "org.nspasteboard.TransientType",
+                       "org.nspasteboard.AutoGeneratedType", "de.petermaurer.TransientPasteboardType",
+                       PasteboardMarkers.own] {
+            XCTAssertTrue(ClipboardClassifier.shouldIgnore(Snap.of([Snap.text("x")], extraTypes: [marker])), marker)
+        }
+        XCTAssertFalse(ClipboardClassifier.shouldIgnore(Snap.of([Snap.text("x")])))
+    }
+}
+
+final class PasteboardSnapshotTests: XCTestCase {
+    func testReadsAllItemsAndSkipsMarkers() {
+        let pb = NSPasteboard(name: NSPasteboard.Name("clipvault.test.\(UUID())"))
+        defer { pb.releaseGlobally() }
+        pb.clearContents()
+        let first = NSPasteboardItem()
+        first.setString("hello", forType: .string)
+        first.setData(Data("{\\rtf1 hello}".utf8), forType: .rtf)
+        first.setString("com.example.app", forType: NSPasteboard.PasteboardType(PasteboardMarkers.source))
+        let second = NSPasteboardItem()
+        second.setString("world", forType: .string)
+        pb.writeObjects([first, second])
+
+        let snap = PasteboardSnapshot.read(pb, maxBytes: 1_000_000)
+        XCTAssertEqual(snap.items.count, 2)
+        XCTAssertTrue(Set(snap.items[0].map(\.type)).isSuperset(of: ["public.rtf", "public.utf8-plain-text"]))
+        XCTAssertFalse(snap.items[0].contains { $0.type == PasteboardMarkers.source })
+        XCTAssertEqual(snap.declaredSource, "com.example.app")
+    }
+
+    func testSizeLimitSkipsLargeTypes() {
+        let pb = NSPasteboard(name: NSPasteboard.Name("clipvault.test.\(UUID())"))
+        defer { pb.releaseGlobally() }
+        pb.clearContents()
+        let item = NSPasteboardItem()
+        item.setString("small", forType: .string)
+        item.setData(Data(count: 2_000), forType: .tiff)
+        pb.writeObjects([item])
+        let snap = PasteboardSnapshot.read(pb, maxBytes: 1_000)
+        XCTAssertEqual(snap.items.first?.map(\.type), ["public.utf8-plain-text"])
+    }
+}
+
+/// Records whether anyone asked for the lazily provided data.
+private final class RecordingProvider: NSObject, NSPasteboardItemDataProvider {
+    var requested = false
+    func pasteboard(_ pasteboard: NSPasteboard?, item: NSPasteboardItem, provideDataForType type: NSPasteboard.PasteboardType) {
+        requested = true
+        item.setString("secret", forType: type)
+    }
+}
+
+final class CaptureGateTests: XCTestCase {
+    private func pasteboard(extraTypes: [String], source: String? = nil) -> (NSPasteboard, RecordingProvider) {
+        let pb = NSPasteboard(name: NSPasteboard.Name("clipvault.test.\(UUID())"))
+        pb.clearContents()
+        let provider = RecordingProvider()
+        let item = NSPasteboardItem()
+        item.setDataProvider(provider, forTypes: [.string])
+        for type in extraTypes { item.setData(Data(), forType: NSPasteboard.PasteboardType(type)) }
+        if let source { item.setString(source, forType: NSPasteboard.PasteboardType(PasteboardMarkers.source)) }
+        pb.writeObjects([item])
+        return (pb, provider)
+    }
+
+    func testConcealedContentIsNeverRead() {
+        let (pb, provider) = pasteboard(extraTypes: [PasteboardMarkers.concealed])
+        defer { pb.releaseGlobally() }
+        XCTAssertNil(PasteboardSnapshot.readIfAllowed(pb, frontmost: nil, excluded: [], maxBytes: 1_000_000))
+        XCTAssertFalse(provider.requested)
+    }
+
+    func testExcludedAppsContentIsNeverRead() {
+        let (pb, provider) = pasteboard(extraTypes: [])
+        defer { pb.releaseGlobally() }
+        XCTAssertNil(PasteboardSnapshot.readIfAllowed(pb, frontmost: "com.bitwarden.desktop",
+                                                      excluded: ["com.bitwarden.desktop"], maxBytes: 1_000_000))
+        XCTAssertFalse(provider.requested)
+    }
+
+    func testDeclaredExcludedSourceIsNeverRead() {
+        let (pb, provider) = pasteboard(extraTypes: [], source: "com.apple.Passwords")
+        defer { pb.releaseGlobally() }
+        XCTAssertNil(PasteboardSnapshot.readIfAllowed(pb, frontmost: "com.example.editor",
+                                                      excluded: ["com.apple.Passwords"], maxBytes: 1_000_000))
+        XCTAssertFalse(provider.requested)
+    }
+
+    func testAllowedContentIsRead() {
+        let (pb, provider) = pasteboard(extraTypes: [])
+        defer { pb.releaseGlobally() }
+        let snapshot = PasteboardSnapshot.readIfAllowed(pb, frontmost: "com.example.editor", excluded: [], maxBytes: 1_000_000)
+        XCTAssertEqual(snapshot?.items.first?.first?.data, Data("secret".utf8))
+        XCTAssertTrue(provider.requested)
     }
 }

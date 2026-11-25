@@ -3,8 +3,8 @@ import MacUtilityKit
 import SwiftUI
 
 /// `ClipVault --demo` runs on a throwaway history filled with sample clips and never reads the real
-/// clipboard. Add `--snapshot out.png` to render the popover offscreen to a PNG and quit — this is
-/// how the README screenshot is made.
+/// clipboard. Add `--snapshot out.png` to render the bar offscreen to a PNG and quit — this is how
+/// the README screenshot is made.
 enum DemoMode {
     static var isEnabled: Bool { CommandLine.arguments.contains("--demo") }
 
@@ -14,6 +14,9 @@ enum DemoMode {
         return CommandLine.arguments[index + 1]
     }
 
+    /// Settings that never touch the real preferences.
+    static let defaults = UserDefaults(suiteName: "com.georgecristea.ClipVault.demo-\(UUID().uuidString)")!
+
     /// A fresh store in a temporary folder, seeded oldest-first so the newest sample is on top.
     static func makeStore() async throws -> SQLiteClipStore {
         let root = FileManager.default.temporaryDirectory
@@ -21,58 +24,64 @@ enum DemoMode {
         let store = try SQLiteClipStore(rootDirectory: root)
 
         let minute: TimeInterval = 60
-        let samples: [(ClipboardCapture, String?, TimeInterval)] = [
+        let samples: [(PasteboardItemData, String?, TimeInterval)] = [
             (text("Meeting moved to Thursday 14:00. Same room, I'll bring the slides."), "com.apple.MobileSMS", 3 * 24 * 60 * minute),
-            (files(["/Users/demo/Documents/Roadmap 2027.pdf"]), "com.apple.finder", 26 * 60 * minute),
+            (file("/Users/demo/Documents/Roadmap 2027.pdf"), "com.apple.finder", 26 * 60 * minute),
+            (text("#2E8CF2"), "com.figma.Desktop", 9 * 60 * minute),
             (text("brew install --cask ghostty"), "com.apple.Terminal", 5 * 60 * minute),
             (image(), "com.apple.Preview", 2 * 60 * minute),
             (text("let store = try SQLiteClipStore()\nlet items = try await store.fetchItems(limit: 250)"), "com.apple.dt.Xcode", 40 * minute),
             (text("Tracking number: 1Z 999 AA1 01 2345 6784"), "com.apple.mail", 12 * minute),
             (text("https://github.com/georgecristea/ClipVault"), "com.apple.Safari", 2 * minute),
         ]
-        for (capture, source, age) in samples {
+        for (item, source, age) in samples {
+            guard let capture = ClipboardClassifier.capture(from: PasteboardSnapshot(items: [item], types: Set(item.map(\.type)))) else { continue }
             try await store.save(capture, sourceBundleID: source, at: Date().addingTimeInterval(-age))
         }
-        if let url = try await store.fetchItems(limit: 1).first {
-            try await store.setPinned(true, for: url)
+        let board = try await store.createPinboard(name: "Snippets")
+        if let newest = try await store.fetchItems(limit: 1).first {
+            try await store.pin([newest.id], to: board.id)
         }
         return store
     }
 
-    /// Renders the popover offscreen once the history has loaded, writes a PNG, and quits.
+    /// Renders the bar offscreen once the history has loaded, writes a PNG, and quits.
     @MainActor
-    static func writeSnapshot(of state: AppState, to path: String) {
-        let view = NSHostingView(rootView: MainPopoverView(appState: state))
-        let frame = NSRect(x: 0, y: 0, width: MUKTheme.popoverWidth, height: MUKTheme.popoverHeight)
-        view.frame = frame
-        let window = NSWindow(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
-        window.contentView = view
-        window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
-        window.orderFrontRegardless()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            view.layoutSubtreeIfNeeded()
-            if let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
-                view.cacheDisplay(in: view.bounds, to: rep)
-                try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+    static func writeSnapshot(of bar: BarController, to path: String) {
+        bar.reload(resetCursor: true)
+        let images = CardImageCache()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            let view = NSHostingView(rootView: BarView(model: bar.model, settings: AppSettings(defaults: defaults), images: images,
+                                                       actions: .preview))
+            images.store = bar.storeForSnapshot
+            let frame = NSRect(x: 0, y: 0, width: 1400, height: BarController.height)
+            view.frame = frame
+            let window = NSWindow(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
+            window.contentView = view
+            window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
+            window.orderFrontRegardless()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                view.layoutSubtreeIfNeeded()
+                if let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                    view.cacheDisplay(in: view.bounds, to: rep)
+                    try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+                }
+                NSApp.terminate(nil)
             }
-            NSApp.terminate(nil)
         }
     }
 
     // MARK: - Sample clips
 
-    private static func text(_ string: String) -> ClipboardCapture {
-        let preview = string.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        return ClipboardCapture(kind: .text, data: Data(string.utf8), preview: String(preview.prefix(240)), fileExtension: "txt")
+    private static func text(_ string: String) -> PasteboardItemData {
+        [PasteboardRepresentation(type: ClipboardClassifier.plainText, data: Data(string.utf8))]
     }
 
-    private static func files(_ paths: [String]) -> ClipboardCapture {
-        let data = (try? JSONEncoder().encode(paths)) ?? Data()
-        let preview = paths.count == 1 ? URL(fileURLWithPath: paths[0]).lastPathComponent : "\(paths.count) files"
-        return ClipboardCapture(kind: .files, data: data, preview: preview, fileExtension: "json")
+    private static func file(_ path: String) -> PasteboardItemData {
+        [PasteboardRepresentation(type: ClipboardClassifier.fileURL, data: URL(fileURLWithPath: path).dataRepresentation)]
     }
 
-    private static func image() -> ClipboardCapture {
+    private static func image() -> PasteboardItemData {
         let size = NSSize(width: 1200, height: 800)
         let image = NSImage(size: size, flipped: false) { rect in
             NSGradient(colors: [NSColor(red: 0.18, green: 0.55, blue: 0.95, alpha: 1),
@@ -87,7 +96,13 @@ enum DemoMode {
             }
             return true
         }
-        let data = image.clipVaultPNGData ?? Data()
-        return ClipboardCapture(kind: .image, data: data, preview: image.clipVaultDescription, fileExtension: "png")
+        return [PasteboardRepresentation(type: "public.png", data: image.clipVaultPNGData ?? Data())]
     }
+}
+
+extension BarActions {
+    /// Actions that do nothing, for rendering the bar offscreen.
+    static let preview = BarActions(paste: { _, _ in }, copy: { _ in }, delete: { _ in }, pin: { _, _ in },
+                                    newPinboard: { _ in }, rename: { _ in }, renamePinboard: { _ in },
+                                    deletePinboard: { _ in }, selectTab: { _ in }, openSettings: {})
 }

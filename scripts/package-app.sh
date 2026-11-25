@@ -12,12 +12,14 @@ RESOURCES_DIR="$CONTENTS_DIR/Resources"
 
 cd "$ROOT_DIR"
 
+# Ask SwiftPM where it put the binary: the universal output folder differs between
+# toolchains, and a hard-coded path can silently pick up a stale build.
 if swift build -c release --arch arm64 --arch x86_64; then
-    BINARY_PATH="$ROOT_DIR/.build/apple/Products/Release/$APP_NAME"
+    BINARY_PATH="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/$APP_NAME"
 else
     echo "Universal build failed; falling back to host-architecture release build." >&2
     swift build -c release
-    BINARY_PATH="$ROOT_DIR/.build/release/$APP_NAME"
+    BINARY_PATH="$(swift build -c release --show-bin-path)/$APP_NAME"
 fi
 
 if [[ ! -f "$BINARY_PATH" ]]; then
@@ -52,10 +54,16 @@ if [[ -f "$ICON_SRC" ]]; then
     cp "$ICON_SRC" "$RESOURCES_DIR/ClipVault.icns"
 fi
 
-# Base signature. Honors CODE_SIGN_IDENTITY (set by notarize.sh for a Developer ID build);
-# otherwise uses an Apple Development cert if present, falling back to ad-hoc (local use only).
+# Base signature. Honors CODE_SIGN_IDENTITY (set by notarize.sh for a Developer ID build).
+# Otherwise prefers the local self-signed "Local Code Signing" certificate (VoxKey's
+# scripts/setup-signing.sh creates it): it never changes, so the Accessibility grant ClipVault
+# needs to paste survives rebuilds. Then an Apple Development cert, then ad-hoc.
 if command -v codesign >/dev/null 2>&1; then
     SIGN_IDENTITY="${CODE_SIGN_IDENTITY:-}"
+    LOCAL_SIGN_NAME="${LOCAL_SIGN_NAME:-Local Code Signing}"
+    if [[ -z "$SIGN_IDENTITY" ]] && security find-certificate -c "$LOCAL_SIGN_NAME" >/dev/null 2>&1; then
+        SIGN_IDENTITY="$LOCAL_SIGN_NAME"
+    fi
     if [[ -z "$SIGN_IDENTITY" ]] && command -v security >/dev/null 2>&1; then
         SIGN_IDENTITY="$(
             security find-identity -v -p codesigning |
@@ -64,6 +72,11 @@ if command -v codesign >/dev/null 2>&1; then
         )"
     fi
     SIGN_IDENTITY="${SIGN_IDENTITY:--}"
+    if [[ "$SIGN_IDENTITY" == "-" ]]; then
+        echo "WARNING: no signing certificate found, signing ad-hoc. macOS will drop the" >&2
+        echo "Accessibility grant on every rebuild." >&2
+    fi
+    echo "Signing with: $SIGN_IDENTITY"
     codesign --force --deep --sign "$SIGN_IDENTITY" "$APP_DIR" >/dev/null
 fi
 
