@@ -18,8 +18,9 @@ It stays on your Mac: no account, no network access. Password managers are skipp
 - **The bar.** ⇧⌘V (or the menu-bar icon) opens a full-width bar on the screen you're working on.
   Each card shows the source app, when you copied it and a preview of the content.
 - **Paste straight into your app.** Return pastes the selected card into the app you came from.
-  ⇧Return pastes as plain text. Select several cards (⌘-click, ⇧-click or ⇧←/→) to paste them
-  together: text is joined, images arrive as separate items.
+  ⇧Return pastes as plain text. Select several cards (⌘-click, ⇧-click or ⇧←/→) and press Return
+  to paste them all: text is joined into one paste; images and files are pasted one after another,
+  so even prompts that take one image per paste (like Claude Code in a terminal) get every one.
 - **Everything you copied, intact.** Rich text, HTML, links and multiple files are stored with all
   their formats, so they paste back exactly as copied. Links and colours get their own cards.
 - **Type to search.** Every word you type must appear in the clip's text or title.

@@ -18,6 +18,8 @@ final class BarController {
     private var activationObserver: NSObjectProtocol?
     private var loadGeneration = 0
     private var askedForAccessibility = false
+    /// Keeps a multi-paste alive until it finishes.
+    private var sequencePaster: SequentialPaster?
     private(set) var isVisible = false
     var openSettings: () -> Void = {}
 
@@ -228,7 +230,12 @@ final class BarController {
         guard !items.isEmpty else { return }
         let target = targetApp
         Task { [weak self] in
-            guard let self, await self.appState.writeToClipboard(items, plainText: plainText) else { return }
+            guard let self, let sources = await self.appState.pasteSources(for: items) else { return }
+            let plain = plainText || self.appState.settings.alwaysPlainText
+            // The whole selection goes on the clipboard first, so it is there to paste by hand
+            // if ClipVault may not paste (setting off, or no Accessibility permission).
+            PasteboardWriter.write(PasteboardWriter.plan(sources, plainText: plain), to: .general)
+            let batches = PasteboardWriter.batches(sources, plainText: plain)
             self.hide(animated: false, restoreFocus: true) {
                 guard self.appState.settings.pasteIntoActiveApp else { return }
                 guard AXIsProcessTrusted() else {
@@ -238,7 +245,7 @@ final class BarController {
                     }
                     return
                 }
-                self.pasteWhenFocused(in: target)
+                self.pasteWhenFocused(in: target) { self.pasteInSequence(batches) }
             }
         }
     }
@@ -288,7 +295,7 @@ final class BarController {
 
     /// Waits until the target app really has focus, then sends ⌘V. Sending too early lands the
     /// keystroke in ClipVault itself, which beeps.
-    private func pasteWhenFocused(in target: NSRunningApplication?) {
+    private func pasteWhenFocused(in target: NSRunningApplication?, then paste: @escaping () -> Void) {
         let deadline = Date().addingTimeInterval(1.0)
         func attempt() {
             let ready = Self.readyToPaste(frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
@@ -297,13 +304,21 @@ final class BarController {
                                           clipVaultHasKeyWindow: NSApp.keyWindow != nil)
             if ready {
                 // A short settle so the target's own window is key, not just its app frontmost.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { PasteKeystroke.send() }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { paste() }
             } else if Date() < deadline {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { attempt() }
             }
             // Past the deadline the clip is still on the clipboard; the user can press ⌘V.
         }
         attempt()
+    }
+
+    /// Pastes each batch with its own ⌘V (see `SequentialPaster`). Focus is not touched in
+    /// between, so the cursor stays where the user was typing.
+    private func pasteInSequence(_ batches: [[PasteboardItemData]]) {
+        let paster = SequentialPaster { PasteKeystroke.send() }
+        sequencePaster = paster
+        paster.paste(batches) { [weak self] in self?.sequencePaster = nil }
     }
 
     /// The target app is frontmost (when known) and ClipVault holds no focus.

@@ -21,6 +21,17 @@ enum PasteboardWriter {
         }
     }
 
+    /// What to paste, one ⌘V per batch. Several text-like clips are joined into one batch (as in
+    /// `plan`). Otherwise every clip is its own batch, so apps that take one image or file per
+    /// paste (like a chat prompt in a terminal) still receive all of them.
+    static func batches(_ sources: [(kind: ClipboardKind, items: [PasteboardItemData])], plainText: Bool) -> [[PasteboardItemData]] {
+        let textLike: Set<ClipboardKind> = [.text, .link, .color]
+        if sources.count <= 1 || sources.allSatisfy({ textLike.contains($0.kind) }) {
+            return [plan(sources, plainText: plainText)]
+        }
+        return sources.map { plan([$0], plainText: plainText) }
+    }
+
     /// The first plain-text representation, or "".
     static func text(of items: [PasteboardItemData]) -> String {
         for item in items {

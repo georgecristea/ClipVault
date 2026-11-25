@@ -47,15 +47,21 @@ final class AppState: ObservableObject {
     /// Puts the clips on the clipboard (tagged so they are not captured again) and moves them to
     /// the front of history.
     func writeToClipboard(_ items: [ClipboardItem], plainText: Bool) async -> Bool {
+        guard let sources = await pasteSources(for: items) else { return false }
+        PasteboardWriter.write(PasteboardWriter.plan(sources, plainText: plainText || settings.alwaysPlainText), to: .general)
+        return true
+    }
+
+    /// Loads the clips' pasteboard items and moves the clips to the front of history.
+    func pasteSources(for items: [ClipboardItem]) async -> [(kind: ClipboardKind, items: [PasteboardItemData])]? {
         do {
             var sources: [(kind: ClipboardKind, items: [PasteboardItemData])] = []
             for item in items { sources.append((item.kind, try await store.payloadItems(for: item))) }
-            PasteboardWriter.write(PasteboardWriter.plan(sources, plainText: plainText || settings.alwaysPlainText), to: .general)
-            try await store.touch(items.map(\.id))
-            return true
+            try? await store.touch(items.map(\.id))
+            return sources
         } catch {
             showMessage("Could not copy: \(error.localizedDescription)", tone: .error)
-            return false
+            return nil
         }
     }
 
