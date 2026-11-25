@@ -1,3 +1,4 @@
+import CryptoKit
 import SQLite3
 import XCTest
 @testable import ClipVault
@@ -203,5 +204,50 @@ final class SQLiteClipStoreTests: XCTestCase {
         let reopened = try makeStore()
         let boardsAgain = try await reopened.pinboards()
         XCTAssertEqual(boardsAgain.count, 1)
+    }
+
+    /// A 0.1 text row with its real hash (SHA-256 of kind + data, no separator) and a preview
+    /// shorter than the text.
+    private func makeLegacyTextDatabase(text: String, preview: String) throws {
+        let payloads = tempRoot.appendingPathComponent("Payloads", isDirectory: true)
+        try FileManager.default.createDirectory(at: payloads, withIntermediateDirectories: true)
+        try Data(text.utf8).write(to: payloads.appendingPathComponent("t.txt"))
+        let legacyHash = SHA256.hash(data: Data("text".utf8) + Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(tempRoot.appendingPathComponent("ClipVault.sqlite3").path, &db), SQLITE_OK)
+        let sql = """
+        CREATE TABLE clipboard_items (id TEXT PRIMARY KEY NOT NULL, kind TEXT NOT NULL, created_at REAL NOT NULL,
+            updated_at REAL NOT NULL, sha256 TEXT NOT NULL, preview TEXT NOT NULL, payload_path TEXT NOT NULL,
+            byte_count INTEGER NOT NULL, pinned INTEGER NOT NULL DEFAULT 0, source_bundle_id TEXT);
+        INSERT INTO clipboard_items VALUES ('T', 'text', 100, 100, '\(legacyHash)', '\(preview)', 't.txt', 1, 0, NULL);
+        """
+        XCTAssertEqual(sqlite3_exec(db, sql, nil, nil, nil), SQLITE_OK)
+        sqlite3_close(db)
+    }
+
+    func testRecopyingLegacyTextMovesItInsteadOfDuplicating() async throws {
+        try makeLegacyTextDatabase(text: "hello from 0.1", preview: "hello from 0.1")
+        let store = try makeStore()
+        let saved = try await save(store, "hello from 0.1")
+        XCTAssertEqual(saved.id, "T")
+        let all = try await store.fetchItems(limit: 50, query: nil, pinboardID: nil)
+        XCTAssertEqual(all.count, 1)
+    }
+
+    func testLegacyTextIsSearchableBeyondItsPreview() async throws {
+        let text = String(repeating: "filler ", count: 60) + "needle"
+        try makeLegacyTextDatabase(text: text, preview: String(text.prefix(240)) + "...")
+        let store = try makeStore()
+        let found = try await store.fetchItems(limit: 50, query: "needle", pinboardID: nil)
+        XCTAssertEqual(found.map(\.id), ["T"])
+    }
+
+    func testSearchIsCaseInsensitiveBeyondASCII() async throws {
+        let store = try makeStore()
+        try await save(store, "Åsa Ștefan Öberg")
+        for query in ["åsa", "ȘTEFAN", "öberg", "ÅSA öBERG"] {
+            let found = try await store.fetchItems(limit: 50, query: query, pinboardID: nil)
+            XCTAssertEqual(found.count, 1, query)
+        }
     }
 }

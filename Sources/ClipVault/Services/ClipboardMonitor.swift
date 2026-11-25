@@ -39,11 +39,12 @@ final class ClipboardMonitor {
         lastChangeCount = pasteboard.changeCount
         guard !settings.isCapturePaused else { return }
 
-        let snapshot = PasteboardSnapshot.read(pasteboard, maxBytes: Self.maxPayloadBytes)
-        guard !ClipboardClassifier.shouldIgnore(snapshot) else { return }
         let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        let excluded = Set(settings.excludedBundleIDs)
-        if [frontmost, snapshot.declaredSource].contains(where: { $0.map(excluded.contains) ?? false }) { return }
+        // Markers and exclusions are checked before any content is read.
+        guard let snapshot = PasteboardSnapshot.readIfAllowed(pasteboard, frontmost: frontmost,
+                                                              excluded: Set(settings.excludedBundleIDs),
+                                                              maxBytes: Self.maxPayloadBytes),
+              !ClipboardClassifier.shouldIgnore(snapshot) else { return }
         guard let capture = ClipboardClassifier.capture(from: snapshot) else { return }
         let source = snapshot.declaredSource ?? frontmost
 

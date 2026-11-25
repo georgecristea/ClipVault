@@ -129,3 +129,57 @@ final class PasteboardSnapshotTests: XCTestCase {
         XCTAssertEqual(snap.items.first?.map(\.type), ["public.utf8-plain-text"])
     }
 }
+
+/// Records whether anyone asked for the lazily provided data.
+private final class RecordingProvider: NSObject, NSPasteboardItemDataProvider {
+    var requested = false
+    func pasteboard(_ pasteboard: NSPasteboard?, item: NSPasteboardItem, provideDataForType type: NSPasteboard.PasteboardType) {
+        requested = true
+        item.setString("secret", forType: type)
+    }
+}
+
+final class CaptureGateTests: XCTestCase {
+    private func pasteboard(extraTypes: [String], source: String? = nil) -> (NSPasteboard, RecordingProvider) {
+        let pb = NSPasteboard(name: NSPasteboard.Name("clipvault.test.\(UUID())"))
+        pb.clearContents()
+        let provider = RecordingProvider()
+        let item = NSPasteboardItem()
+        item.setDataProvider(provider, forTypes: [.string])
+        for type in extraTypes { item.setData(Data(), forType: NSPasteboard.PasteboardType(type)) }
+        if let source { item.setString(source, forType: NSPasteboard.PasteboardType(PasteboardMarkers.source)) }
+        pb.writeObjects([item])
+        return (pb, provider)
+    }
+
+    func testConcealedContentIsNeverRead() {
+        let (pb, provider) = pasteboard(extraTypes: [PasteboardMarkers.concealed])
+        defer { pb.releaseGlobally() }
+        XCTAssertNil(PasteboardSnapshot.readIfAllowed(pb, frontmost: nil, excluded: [], maxBytes: 1_000_000))
+        XCTAssertFalse(provider.requested)
+    }
+
+    func testExcludedAppsContentIsNeverRead() {
+        let (pb, provider) = pasteboard(extraTypes: [])
+        defer { pb.releaseGlobally() }
+        XCTAssertNil(PasteboardSnapshot.readIfAllowed(pb, frontmost: "com.bitwarden.desktop",
+                                                      excluded: ["com.bitwarden.desktop"], maxBytes: 1_000_000))
+        XCTAssertFalse(provider.requested)
+    }
+
+    func testDeclaredExcludedSourceIsNeverRead() {
+        let (pb, provider) = pasteboard(extraTypes: [], source: "com.apple.Passwords")
+        defer { pb.releaseGlobally() }
+        XCTAssertNil(PasteboardSnapshot.readIfAllowed(pb, frontmost: "com.example.editor",
+                                                      excluded: ["com.apple.Passwords"], maxBytes: 1_000_000))
+        XCTAssertFalse(provider.requested)
+    }
+
+    func testAllowedContentIsRead() {
+        let (pb, provider) = pasteboard(extraTypes: [])
+        defer { pb.releaseGlobally() }
+        let snapshot = PasteboardSnapshot.readIfAllowed(pb, frontmost: "com.example.editor", excluded: [], maxBytes: 1_000_000)
+        XCTAssertEqual(snapshot?.items.first?.first?.data, Data("secret".utf8))
+        XCTAssertTrue(provider.requested)
+    }
+}

@@ -9,7 +9,7 @@ actor SQLiteClipStore: ClipStore {
     private let payloadDirectoryURL: URL
     private var database: OpaquePointer?
 
-    static let schemaVersion: Int32 = 1
+    static let schemaVersion: Int32 = 2
 
     /// - Parameter rootDirectory: overrides the storage location (used by tests). Defaults to
     ///   `~/Library/Application Support/ClipVault`.
@@ -23,7 +23,7 @@ actor SQLiteClipStore: ClipStore {
         // Clipboard history can contain secrets — keep it out of Time Machine / iCloud backups.
         Self.excludeFromBackup(appSupportURL)
         database = try Self.openDatabase(at: databaseURL.path)
-        try Self.migrate(database)
+        try Self.migrate(database, payloadDirectory: payloadDirectoryURL)
         Self.restrictPermissions(at: databaseURL)
     }
 
@@ -46,10 +46,9 @@ actor SQLiteClipStore: ClipStore {
             conditions.append("pinboard_id = ?")
             params.append(.int(pinboardID))
         }
-        for word in (query ?? "").split(whereSeparator: \.isWhitespace) {
-            let pattern = "%\(Self.escapeLike(String(word)))%"
-            conditions.append("(search_text LIKE ? ESCAPE '\\' OR IFNULL(title, '') LIKE ? ESCAPE '\\')")
-            params += [.text(pattern), .text(pattern)]
+        for word in Self.fold(query ?? "").split(whereSeparator: \.isWhitespace) {
+            conditions.append("search_key LIKE ? ESCAPE '\\'")
+            params.append(.text("%\(Self.escapeLike(String(word)))%"))
         }
         let whereClause = conditions.isEmpty ? "" : "WHERE " + conditions.joined(separator: " AND ")
         let order = pinboardID == nil ? "last_copied_at DESC, created_at DESC" : "pin_order ASC, last_copied_at DESC"
@@ -94,11 +93,12 @@ actor SQLiteClipStore: ClipStore {
             try run("""
                 INSERT INTO clipboard_items
                 (id, kind, created_at, updated_at, sha256, preview, payload_path, byte_count, pinned, source_bundle_id,
-                 payload_format, search_text, last_copied_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?);
+                 payload_format, search_text, search_key, last_copied_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?);
                 """, [.text(id), .text(capture.kind.rawValue), .double(now), .double(now), .text(hash), .text(capture.preview),
                       .text(fileName), .int(Int64(byteCount)), sourceBundleID.map(Param.text) ?? .null,
-                      .text(PayloadCodec.itemsFormat), .text(capture.searchText), .double(now)])
+                      .text(PayloadCodec.itemsFormat), .text(capture.searchText),
+                      .text(Self.searchKey(text: capture.searchText, title: nil)), .double(now)])
         } catch {
             try? FileManager.default.removeItem(at: payloadURL)
             throw error
@@ -115,8 +115,12 @@ actor SQLiteClipStore: ClipStore {
 
     func setTitle(_ title: String?, for id: String) throws {
         let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        try run("UPDATE clipboard_items SET title = ?, updated_at = ? WHERE id = ?;",
-                [trimmed.isEmpty ? .null : .text(trimmed), .double(Date().timeIntervalSince1970), .text(id)])
+        let searchText = try rows("SELECT IFNULL(search_text, preview) FROM clipboard_items WHERE id = ?;", [.text(id)]) {
+            Self.columnText($0, 0) ?? ""
+        }.first ?? ""
+        try run("UPDATE clipboard_items SET title = ?, search_key = ?, updated_at = ? WHERE id = ?;",
+                [trimmed.isEmpty ? .null : .text(trimmed), .text(Self.searchKey(text: searchText, title: trimmed)),
+                 .double(Date().timeIntervalSince1970), .text(id)])
     }
 
     func delete(_ ids: [String]) throws {
@@ -275,7 +279,7 @@ actor SQLiteClipStore: ClipStore {
         return database
     }
 
-    private nonisolated static func migrate(_ database: OpaquePointer?) throws {
+    private nonisolated static func migrate(_ database: OpaquePointer?, payloadDirectory: URL) throws {
         try exec(database, "PRAGMA journal_mode = DELETE;")
         try exec(database, "PRAGMA secure_delete = ON;")
         try exec(database, "PRAGMA foreign_keys = ON;")
@@ -310,14 +314,15 @@ actor SQLiteClipStore: ClipStore {
             ("title", "TEXT"),
             ("pinboard_id", "INTEGER"),
             ("pin_order", "INTEGER NOT NULL DEFAULT 0"),
-            ("last_copied_at", "REAL")
+            ("last_copied_at", "REAL"),
+            ("search_key", "TEXT")
         ]
         for (name, definition) in added where !columns.contains(name) {
             try exec(database, "ALTER TABLE clipboard_items ADD COLUMN \(name) \(definition);")
         }
 
         // Version 1: fill the new columns for old rows, and move pinned clips to a "Pinned" pinboard.
-        if userVersion(database) < schemaVersion {
+        if userVersion(database) < 1 {
             try exec(database, "BEGIN;")
             do {
                 try exec(database, "UPDATE clipboard_items SET last_copied_at = created_at WHERE last_copied_at IS NULL;")
@@ -330,7 +335,21 @@ actor SQLiteClipStore: ClipStore {
                     WHERE pinned = 1 AND pinboard_id IS NULL;
                     """)
                 }
-                try exec(database, "PRAGMA user_version = \(schemaVersion);")
+                try exec(database, "PRAGMA user_version = 1;")
+                try exec(database, "COMMIT;")
+            } catch {
+                try? exec(database, "ROLLBACK;")
+                throw error
+            }
+        }
+
+        // Version 2: give 0.1 clips the current content hash (so re-copying them moves them to the
+        // front), search the full text of 0.1 text clips, and fill the case-folded search key.
+        if userVersion(database) < 2 {
+            try exec(database, "BEGIN;")
+            do {
+                try migrateToV2(database, payloadDirectory: payloadDirectory)
+                try exec(database, "PRAGMA user_version = 2;")
                 try exec(database, "COMMIT;")
             } catch {
                 try? exec(database, "ROLLBACK;")
@@ -342,6 +361,51 @@ actor SQLiteClipStore: ClipStore {
         try exec(database, "CREATE INDEX IF NOT EXISTS idx_clipboard_items_last_copied ON clipboard_items(last_copied_at DESC);")
         try exec(database, "CREATE INDEX IF NOT EXISTS idx_clipboard_items_sha256 ON clipboard_items(sha256);")
         try exec(database, "CREATE INDEX IF NOT EXISTS idx_clipboard_items_pinboard ON clipboard_items(pinboard_id, pin_order);")
+    }
+
+    private nonisolated static func migrateToV2(_ database: OpaquePointer?, payloadDirectory: URL) throws {
+        var select: OpaquePointer?
+        let sql = "SELECT id, kind, payload_path, payload_format, IFNULL(search_text, preview), title, sha256 FROM clipboard_items;"
+        guard sqlite3_prepare_v2(database, sql, -1, &select, nil) == SQLITE_OK else { throw ClipVaultError.storage("v2: select") }
+        var updates: [(id: String, hash: String, searchText: String, key: String)] = []
+        while sqlite3_step(select) == SQLITE_ROW {
+            guard let id = columnText(select, 0), let kindValue = columnText(select, 1),
+                  let kind = ClipboardKind(rawValue: kindValue), let path = columnText(select, 2) else { continue }
+            var searchText = columnText(select, 4) ?? ""
+            var hash = columnText(select, 6) ?? ""
+            if columnText(select, 3) == PayloadCodec.legacyFormat,
+               let data = try? Data(contentsOf: payloadDirectory.appendingPathComponent(path)) {
+                switch kind {
+                case .text, .link, .color:
+                    if let text = String(data: data, encoding: .utf8) {
+                        searchText = String(text.prefix(ClipboardClassifier.maxSearchLength))
+                        hash = Self.hash(kind: kind, key: data)
+                    }
+                case .image:
+                    hash = Self.hash(kind: kind, key: data)
+                case .files:
+                    if let paths = try? JSONDecoder().decode([String].self, from: data) {
+                        hash = Self.hash(kind: kind, key: Data(paths.joined(separator: "\n").utf8))
+                        searchText = paths.map { URL(fileURLWithPath: $0).lastPathComponent }.joined(separator: "\n")
+                    }
+                }
+            }
+            updates.append((id, hash, searchText, searchKey(text: searchText, title: columnText(select, 5))))
+        }
+        sqlite3_finalize(select)
+
+        var update: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "UPDATE clipboard_items SET sha256 = ?, search_text = ?, search_key = ? WHERE id = ?;",
+                                 -1, &update, nil) == SQLITE_OK else { throw ClipVaultError.storage("v2: update") }
+        defer { sqlite3_finalize(update) }
+        for row in updates {
+            sqlite3_reset(update)
+            sqlite3_bind_text(update, 1, row.hash, -1, sqliteTransient)
+            sqlite3_bind_text(update, 2, row.searchText, -1, sqliteTransient)
+            sqlite3_bind_text(update, 3, row.key, -1, sqliteTransient)
+            sqlite3_bind_text(update, 4, row.id, -1, sqliteTransient)
+            guard sqlite3_step(update) == SQLITE_DONE else { throw ClipVaultError.storage("v2: update row") }
+        }
     }
 
     private nonisolated static func userVersion(_ database: OpaquePointer?) -> Int32 {
@@ -443,6 +507,16 @@ actor SQLiteClipStore: ClipStore {
         return .storage(fallback)
     }
 
+    /// Lower-cased for any script (SQLite's LIKE only folds ASCII), so "Å" finds "å".
+    nonisolated static func fold(_ text: String) -> String {
+        text.folding(options: [.caseInsensitive], locale: nil)
+    }
+
+    /// What search matches against: the clip's text and its title, case-folded.
+    nonisolated static func searchKey(text: String, title: String?) -> String {
+        fold(text) + "\n" + fold(title ?? "")
+    }
+
     private static func escapeLike(_ value: String) -> String {
         value
             .replacingOccurrences(of: "\\", with: "\\\\")
@@ -452,7 +526,7 @@ actor SQLiteClipStore: ClipStore {
 
     /// Text, links and colours share one category, so the same text is one clip whatever kind
     /// it was classified as (and it matches text clips stored by ClipVault 0.1).
-    private static func hash(kind: ClipboardKind, key: Data) -> String {
+    private nonisolated static func hash(kind: ClipboardKind, key: Data) -> String {
         let category: String
         switch kind {
         case .text, .link, .color: category = ClipboardKind.text.rawValue

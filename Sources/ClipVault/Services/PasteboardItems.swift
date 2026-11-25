@@ -44,6 +44,19 @@ struct PasteboardSnapshot: Equatable {
     /// The source app declared with `org.nspasteboard.source`, if any.
     var declaredSource: String?
 
+    /// Reads the pasteboard only if it may be saved: no skip marker, and neither the frontmost
+    /// app nor the declared source is excluded. The checks look at type names (and the source
+    /// marker's string) only, so content from excluded apps is never read into memory.
+    static func readIfAllowed(_ pasteboard: NSPasteboard, frontmost: String?, excluded: Set<String>, maxBytes: Int) -> PasteboardSnapshot? {
+        let types = Set((pasteboard.types ?? []).map(\.rawValue))
+        guard PasteboardMarkers.skip.isDisjoint(with: types) else { return nil }
+        if let frontmost, excluded.contains(frontmost) { return nil }
+        if types.contains(PasteboardMarkers.source),
+           let declared = pasteboard.string(forType: NSPasteboard.PasteboardType(PasteboardMarkers.source)),
+           excluded.contains(declared) { return nil }
+        return read(pasteboard, maxBytes: maxBytes)
+    }
+
     /// Reads every item and storable type. Types that would take the clip past `maxBytes` are
     /// skipped.
     static func read(_ pasteboard: NSPasteboard, maxBytes: Int) -> PasteboardSnapshot {

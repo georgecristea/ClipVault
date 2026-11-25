@@ -18,12 +18,17 @@ final class BarModel: ObservableObject {
     @Published var cursor: String?
     /// Cards chosen for pasting; contains the cursor whenever something is shown.
     @Published var selection: Set<String> = []
-    /// True while loading for the first time after opening.
-    @Published var isLoading = false
+    /// True from the moment a reload starts until its results are applied. While true the shown
+    /// cards may be stale (from the last time the bar was open, or the previous search), so
+    /// keyboard actions must not act on them.
+    @Published private(set) var isLoading = false
+
+    func beginLoading() { isLoading = true }
 
     /// Replaces the shown clips. The cursor stays on the same clip when it is still shown,
     /// unless `resetCursor`.
     func apply(items: [ClipboardItem], pinboards: [Pinboard], resetCursor: Bool = true) {
+        isLoading = false
         self.items = items
         self.pinboards = pinboards
         let ids = Set(items.map(\.id))
@@ -42,6 +47,15 @@ final class BarModel: ObservableObject {
     var selectedItems: [ClipboardItem] { items.filter { selection.contains($0.id) } }
 
     var cursorItem: ClipboardItem? { cursorIndex.map { items[$0] } }
+
+    /// The selection, or nothing while a reload is pending.
+    var actionableItems: [ClipboardItem] { isLoading ? [] : selectedItems }
+
+    /// The clip for ⌘`number` (1-based), or nil while a reload is pending.
+    func quickItem(at number: Int) -> ClipboardItem? {
+        guard !isLoading, number >= 1, number <= items.count else { return nil }
+        return items[number - 1]
+    }
 
     func move(by delta: Int, extend: Bool = false) {
         guard !items.isEmpty else { return }

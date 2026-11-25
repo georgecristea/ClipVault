@@ -69,4 +69,15 @@ final class BarModelTests: XCTestCase {
         m.move(by: 1)
         XCTAssertNil(m.cursor)
     }
+
+    func testNothingIsActionableWhileLoading() {
+        let m = model(["a", "b"])
+        m.beginLoading()
+        XCTAssertEqual(m.actionableItems, [])
+        XCTAssertNil(m.quickItem(at: 1))
+        m.apply(items: ["c"].map(item), pinboards: [])
+        XCTAssertEqual(m.actionableItems.map(\.id), ["c"])
+        XCTAssertEqual(m.quickItem(at: 1)?.id, "c")
+        XCTAssertNil(m.quickItem(at: 2))
+    }
 }

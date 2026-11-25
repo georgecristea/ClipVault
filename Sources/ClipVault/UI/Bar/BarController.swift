@@ -59,6 +59,7 @@ final class BarController {
         let query = model.query
         let pinboardID = model.pinboardID
         let store = appState.store
+        model.beginLoading()
         Task { [weak self] in
             let boards = (try? await store.pinboards()) ?? []
             let shownBoard = pinboardID.flatMap { id in boards.contains { $0.id == id } ? id : nil }
@@ -166,12 +167,12 @@ final class BarController {
         case kVK_End:
             moveCursor(by: model.items.count, extend: false)
         case kVK_Return, kVK_ANSI_KeypadEnter:
-            paste(model.selectedItems, plainText: shift)
+            paste(model.actionableItems, plainText: shift)
         case kVK_Space where !command && model.query.isEmpty:
             if preview.isVisible { preview.hide() } else { preview.show(item: model.cursorItem, above: panel) }
         case kVK_Delete, kVK_ForwardDelete:
             if command {
-                let items = model.selectedItems
+                let items = model.actionableItems
                 run { await $0.appState.delete(items) }
             } else if !model.query.isEmpty {
                 setQuery(String(model.query.dropLast()))
@@ -195,14 +196,14 @@ final class BarController {
 
     private func handleCommand(_ chars: String, shift: Bool) -> Bool {
         if let digit = Int(chars), (1...9).contains(digit) {
-            if digit <= model.items.count { paste([model.items[digit - 1]], plainText: shift) }
+            if let item = model.quickItem(at: digit) { paste([item], plainText: shift) }
             return true
         }
         switch chars {
-        case "c": copy(model.selectedItems)
+        case "c": copy(model.actionableItems)
         case "a": model.selection = Set(model.items.map(\.id))
         case "p":
-            let items = model.selectedItems
+            let items = model.actionableItems
             run { await $0.appState.togglePinned(items) }
         case ",": hide(); openSettings()
         case "w": hide()
