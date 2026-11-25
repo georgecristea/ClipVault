@@ -33,6 +33,12 @@ struct SettingsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 10) {
+                MUKSettingsRow(title: "Capture clipboard",
+                               detail: captureDetail,
+                               systemImage: settings.isCapturePaused ? "pause.circle" : "record.circle") {
+                    Toggle("", isOn: captureBinding).labelsHidden()
+                }
+
                 MUKSettingsRow(title: "Show the bar",
                                detail: shortcutRejected ? "That shortcut is taken; kept the previous one" : "Global shortcut, from any app",
                                systemImage: "keyboard") {
@@ -132,6 +138,16 @@ struct SettingsView: View {
             scheduleRetentionChange()
         }
         .onChange(of: keepForever) { _, _ in scheduleRetentionChange() }
+    }
+
+    private var captureBinding: Binding<Bool> {
+        Binding(get: { !settings.isCapturePaused }, set: { appState.setCapturePaused(!$0) })
+    }
+
+    private var captureDetail: String {
+        guard settings.isCapturePaused, let until = settings.pausedUntil else { return "Saving what you copy" }
+        if until == .distantFuture { return "Paused — turn on to resume" }
+        return "Paused until \(until.formatted(date: .omitted, time: .shortened))"
     }
 
     private var shortcutBinding: Binding<MUKHotkey> {

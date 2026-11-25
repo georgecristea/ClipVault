@@ -15,6 +15,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         self.showBar = showBar
         self.showSettings = showSettings
         super.init()
+        statusItem.autosaveName = "ClipVault"
+        statusItem.isVisible = true
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
@@ -23,10 +25,38 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     /// Refreshes the icon (paused or not).
     func updateIcon() {
-        let paused = appState.settings.isCapturePaused
-        statusItem.button?.image = NSImage(systemSymbolName: paused ? "pause.circle" : "doc.on.clipboard",
-                                           accessibilityDescription: "ClipVault")
-        statusItem.button?.image?.isTemplate = true
+        statusItem.button?.image = Self.statusImage(paused: appState.settings.isCapturePaused)
+    }
+
+    /// The ClipVault clipboard glyph, with a small pause badge while capture is paused, so the
+    /// icon stays recognisable in both states.
+    static func statusImage(paused: Bool) -> NSImage {
+        let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+        let base = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: nil)?
+            .withSymbolConfiguration(config) ?? NSImage(size: NSSize(width: 18, height: 18))
+        guard paused else {
+            base.isTemplate = true
+            base.accessibilityDescription = "ClipVault"
+            return base
+        }
+        let badgeConfig = NSImage.SymbolConfiguration(pointSize: 8, weight: .bold)
+        let badge = NSImage(systemSymbolName: "pause.circle.fill", accessibilityDescription: nil)?.withSymbolConfiguration(badgeConfig)
+        let image = NSImage(size: base.size, flipped: false) { rect in
+            base.draw(in: rect)
+            if let badge {
+                let size = badge.size
+                let frame = NSRect(x: rect.maxX - size.width, y: rect.minY, width: size.width, height: size.height)
+                // Clear a ring around the badge so it reads against the glyph.
+                NSGraphicsContext.current?.compositingOperation = .clear
+                NSBezierPath(ovalIn: frame.insetBy(dx: -1, dy: -1)).fill()
+                NSGraphicsContext.current?.compositingOperation = .sourceOver
+                badge.draw(in: frame)
+            }
+            return true
+        }
+        image.isTemplate = true
+        image.accessibilityDescription = "ClipVault (capture paused)"
+        return image
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {

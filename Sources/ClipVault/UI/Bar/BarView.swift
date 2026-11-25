@@ -13,6 +13,7 @@ struct BarActions {
     var renamePinboard: (_ pinboard: Pinboard) -> Void
     var deletePinboard: (_ pinboard: Pinboard) -> Void
     var selectTab: (_ tab: BarTab) -> Void
+    var resumeCapture: () -> Void
     var openSettings: () -> Void
 }
 
@@ -53,7 +54,14 @@ struct BarView: View {
             }
             Spacer(minLength: 0)
             if settings.isCapturePaused {
-                MUKStatusChip(label: "Capture", value: "Paused", tone: .warning)
+                Button { actions.resumeCapture() } label: {
+                    HStack(spacing: 6) {
+                        MUKStatusChip(label: "Capture", value: "Paused", tone: .warning)
+                        Text("Resume").font(.system(size: 12, weight: .semibold)).foregroundStyle(MUKTheme.accent)
+                    }
+                }
+                .buttonStyle(.plain)
+                .help("Resume capturing what you copy")
             }
             Button { actions.openSettings() } label: { Image(systemName: "gearshape") }
                 .buttonStyle(.borderless)

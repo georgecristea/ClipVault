@@ -104,5 +104,5 @@ extension BarActions {
     /// Actions that do nothing, for rendering the bar offscreen.
     static let preview = BarActions(paste: { _, _ in }, copy: { _ in }, delete: { _ in }, pin: { _, _ in },
                                     newPinboard: { _ in }, rename: { _ in }, renamePinboard: { _ in },
-                                    deletePinboard: { _ in }, selectTab: { _ in }, openSettings: {})
+                                    deletePinboard: { _ in }, selectTab: { _ in }, resumeCapture: {}, openSettings: {})
 }
