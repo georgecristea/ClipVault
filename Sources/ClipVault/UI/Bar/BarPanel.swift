@@ -8,9 +8,11 @@ final class BarPanel: NSPanel {
 
     init() {
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
-        level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.mainMenuWindow)))
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         isFloatingPanel = true
+        // Set after `isFloatingPanel`, which resets the level to `.floating` (below the Dock).
+        // The main-menu level sits above the Dock, so the bar covers it.
+        level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.mainMenuWindow)))
         hidesOnDeactivate = false
         isOpaque = false
         backgroundColor = .clear
